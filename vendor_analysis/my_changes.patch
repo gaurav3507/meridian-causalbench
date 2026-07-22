@@ -1,0 +1,25 @@
+diff --git a/data/simulation/data_1.pkl b/data/simulation/data_1.pkl
+index 430be6e..fdea38e 100644
+Binary files a/data/simulation/data_1.pkl and b/data/simulation/data_1.pkl differ
+diff --git a/src/dataset.py b/src/dataset.py
+index 42f8da9..42815bd 100644
+--- a/src/dataset.py
++++ b/src/dataset.py
+@@ -9,7 +9,7 @@ import scanpy as sc
+ # map the target genes of each cell to a binary vector, using a target gene list "perturb_targets".
+ # "perturb_type" specifies whether the returned object contains single trarget-gene samples, double target-gene samples, or both.
+ class SCDataset(Dataset):
+-    def __init__(self, datafile='/home/jzhang/discrepancy_vae/identifiable_causal_vae/data/datasets/Norman2019_raw.h5ad', perturb_type='single', perturb_targets=None):
++    def __init__(self, datafile='/workspace/external/discrepancy_vae/datasets/Norman2019_raw.h5ad', perturb_type='single', perturb_targets=None):
+         super(Dataset, self).__init__()
+         assert perturb_type in ['single', 'double', 'both'], 'perturb_type not supported!'
+ 
+@@ -59,7 +59,7 @@ class SCDataset(Dataset):
+ 
+ # read simulation dataset
+ class SimuDataset(Dataset):
+-    def __init__(self, datafile='/home/jzhang/discrepancy_vae/identifiable_causal_vae/data/simulation/data_1.pkl', perturb_type='single', perturb_targets=None):
++    def __init__(self, datafile='/workspace/external/discrepancy_vae/data/simulation/data_1.pkl', perturb_type='single', perturb_targets=None):
+         super(Dataset, self).__init__()
+         assert perturb_type in ['single', 'double'], 'perturb_type not supported!'
+ 
