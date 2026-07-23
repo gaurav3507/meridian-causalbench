@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software or the environment-validity screen, please cite it as below."
+title: "meridian-causalbench: environment-validity screen and benchmarked-negative CausalBench evaluation"
+authors:
+  - family-names: "Goyal"
+    given-names: "Gaurav"
+version: "1.0.0"
+date-released: "2026-07-23"
+license: MIT
+repository-code: "https://github.com/gaurav3507/meridian-causalbench"
+type: software
+keywords:
+  - causal representation learning
+  - single-cell perturbation
+  - CausalBench
+  - Perturb-seq
+  - zero-shot intervention prediction
+preferred-citation:
+  type: article
+  title: "Environment-validity screen for causal representation learning: a benchmarked-negative case study on CausalBench"
+  authors:
+    - family-names: "Goyal"
+      given-names: "Gaurav"
+  journal: "IEEE Transactions on Computational Biology and Bioinformatics"
+  status: "under review"
+  year: 2026
