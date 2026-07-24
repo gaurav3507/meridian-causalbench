@@ -3,12 +3,14 @@
 Every number intended for the manuscript, traced to its source file and
 independently re-verified.
 
-**Status of this document.** Sections marked ✅ VERIFIED were recomputed from the
-underlying per-item arrays and agree with the stored value. Sections marked
-⏳ PENDING A100 could not be checked on the Mac clone because the source file is
-not in this repository. Nothing in this document is reconstructed from memory: if
-a number has no traceable source it is listed under UNTRACEABLE rather than
-given a value.
+**Verification status.** Run on the A100 with all result files present:
+**185 numbers traced, 141 independently recomputed, 0 stored-vs-recomputed
+mismatches.** Every results file is internally consistent — each stored scalar
+reproduces exactly from the per-item arrays in the same file. All defects found
+are *between* files, or are metric-choice problems.
+
+Two items remain open: the HCP source comparison (§1.4) and the raw-data
+descriptors (§7.2), both awaiting `scripts/61_collect_descriptors.py`.
 
 Verification scripts:
 
@@ -16,117 +18,117 @@ Verification scripts:
     python scripts/62_crosscheck_claims.py    # prose/figure claims vs results files
     python scripts/61_collect_descriptors.py  # A100 only: raw-data descriptors
 
-Run counts as of the last Mac run: **117 numbers traced, 97 independently
-recomputed, 0 stored-vs-recomputed mismatches, 11 cross-file findings.**
-
 ---
 
 ## 1. Screen — primary metric (`mean_ratio_pairs`)
 
 Headline configuration: `filt0`, `NMIN=200`, `d=10`, `seed=0`.
 
-### 1.1 Metric definition and why `pairs` is primary
+### 1.1 Why `pairs` is primary
 
-Both quantities come from `causalbench/scripts/03_screen.py`:
+From `causalbench/scripts/03_screen.py`, both ratios share the denominator
+`median(‖mean(Za) − mean(Zb)‖)` (split-half of the same environment). They differ
+in the numerator:
 
-| quantity | numerator | denominator |
-|---|---|---|
-| `mean_ratio_vs_ctrl` | `median(‖mean(Zа) − mean(Zr)‖)` where `Zr` is drawn from `ref_pool` | `median(‖mean(Za) − mean(Zb)‖)` (split-half of the same env) |
-| `mean_ratio_pairs` | `median(‖mean(Za) − mean(Zb)‖)` across **two different environments** | same split-half denominator |
+- `mean_ratio_vs_ctrl` — environment against a draw from `ref_pool`.
+- `mean_ratio_pairs` — environment against **a different environment**.
 
-**Confirmed at `03_screen.py:63`:** in the step-0 branch `ref_pool = ctrl_rows[:0]`
-— an empty array. The subsequent draw therefore falls back to the pseudo-environment's
-own rows (`rng.choice(ref_pool if len(ref_pool) else rows, ...)`), so under step-0
-`mean_ratio_vs_ctrl` compares an environment against itself and returns ≈0.67–0.72,
-which is a construction artifact, not a calibrated null. Only `mean_ratio_pairs`
-is calibrated to ≈1.0 by step-0. **`mean_ratio_pairs` is the primary metric.**
+**Confirmed at `03_screen.py:63`:** under step-0, `ref_pool = ctrl_rows[:0]` is
+empty, so the draw falls back to the pseudo-environment's own rows. Under step-0
+`mean_ratio_vs_ctrl` therefore compares an environment against itself. Measured
+step-0 `vs_ctrl` values are 0.672 (K562), 0.678 (RPE1), 0.722 (Norman) — a
+construction artifact, not a calibrated null. Only `mean_ratio_pairs` returns
+≈1.0. **`mean_ratio_pairs` is the primary metric.**
 
-### 1.2 Norman 2019 ✅ VERIFIED
+### 1.2 Headline values ✅ VERIFIED
 
-Source: `causalbench/results/screen/norman.json`
+| dataset | **`mean_ratio_pairs`** | `mean_ratio_vs_ctrl` | `n_envs` | `n_fit` | source |
+|---|---:|---:|---:|---:|---|
+| K562 | **4.270326807237259** | 3.0766671188533263 | 385 | 100 | `screen/k562_filt0_n200_d10.json` |
+| RPE1 | **2.058949502375608** | 1.6709678829248977 | 146 | 100 | `screen/rpe1_filt0_n200_d10.json` |
+| Norman | **3.7147385914720377** | 3.1895884263497645 | 101 | 100 | `screen/norman.json $.screen[nmin=200,d=10]` |
+| HCP | *no such metric* — see §1.4 | 0.7483833300732464 (LR) | — | — | `hcp/results/mean_shift_LR.json` |
 
-| quantity | value | JSON key path |
-|---|---:|---|
-| **`mean_ratio_pairs` (PRIMARY)** | **3.7147385914720377** | `$.screen[nmin=200,d=10].mean_ratio_pairs` |
-| `mean_ratio_vs_ctrl` (secondary) | 3.1895884263497645 | `$.screen[nmin=200,d=10].mean_ratio_vs_ctrl` |
-| step-0 gate `mean_ratio_pairs` | 1.0070856615811838 | `$.step0_gate[nmin=200,d=10].mean_ratio_pairs` |
-| step-0 `mean_ratio_vs_ctrl` (degenerate) | 0.7216995131517371 | `$.step0_gate[nmin=200,d=10].mean_ratio_vs_ctrl` |
-| environments surviving NMIN | 101 | `$.screen[nmin=200,d=10].n_envs` |
-| cells per half (`n_fit`) | 100 | `$.screen[nmin=200,d=10].n_fit` |
+`n_envs` corroborated independently by the split files (`$.n_usable` = 385 / 146) ✅.
 
-Step-0 gate across all four Norman configurations (`n=200/100 × d=5/10`),
-`mean_ratio_pairs`: **0.996, 1.007, 1.020, 1.029** — all inside [0.9, 1.1].
-`summary.step0_pass = true` reproduces. ✅
+### 1.3 Step-0 gate ✅ VERIFIED
 
-> ⚠️ **The README and `norman_verdict.txt` both quote 3.19, which is the
-> SECONDARY metric.** Under the primary metric the Norman value is **3.71**.
-> See DISCREPANCY D1.
+| dataset | `mean_ratio_pairs` (the gate) | `mean_ratio_vs_ctrl` (degenerate) | in [0.9, 1.1]? |
+|---|---:|---:|---|
+| K562 | 1.0178167396182576 | 0.6721562536093018 | ✅ |
+| RPE1 | 0.9255876747619355 | 0.678180883144252 | ✅ |
+| Norman | 1.0070856615811838 | 0.7216995131517371 | ✅ |
+| HCP | **absent** | — | **no gate exists** |
 
-### 1.3 CausalBench K562 / RPE1 ⏳ PENDING A100
+Norman across all four of its configurations: 0.996, 1.007, 1.020, 1.029 ✅.
 
-Files `causalbench/results/screen/{k562,rpe1}_filt0_n200_d10.json` and their
-`_STEP0` counterparts exist in the A100 working tree but were **never committed**
-to this repository, so they cannot be verified here.
+### 1.4 HCP — different construction ⏳ SOURCE COMPARISON PENDING
 
-Values observed during an earlier A100 session (recorded for comparison only,
-**not verified**):
+HCP's ratio comes from `hcp/scripts/mean_shift_v2.py`, **not** `03_screen.py`.
+Established from the results files:
 
-| dataset | `mean_ratio_pairs` | `mean_ratio_vs_ctrl` | `coef_ratio_vs_ctrl` | `n_envs` |
-|---|---:|---:|---:|---:|
-| K562 | 4.270 | 3.077 | 1.179 | 385 |
-| RPE1 | 2.059 | 1.671 | 1.069 | 146 |
+- Keys present: `mean_ratio`, `within_median`, `between_median`.
+- **No `mean_ratio_pairs`. No step-0 gate entry.**
+- `mean_ratio == between_median / within_median`, verified to 1e-9 ✅.
 
-Step-0 gate (`mean_ratio_pairs`): K562 **1.018**, RPE1 **0.926**;
-`mean_ratio_vs_ctrl` under step-0: K562 0.672, RPE1 0.678.
+That is structurally the **`vs_ctrl` form**. HCP has no value of the paper's
+primary metric.
 
-`n_envs` for both is independently corroborated by the split files
-(`results/splits/k562_zeroshot_split.json` `$.n_usable = 385`;
-`rpe1_zeroshot_split.json` `$.n_usable = 146`) ✅.
-
-### 1.4 HCP — different construction ⏳ PENDING A100
-
-**HCP's ratio is NOT produced by `03_screen.py`.** It comes from
-`hcp/scripts/mean_shift_v2.py`, a separate fMRI pipeline. What can be established
-from the results files alone:
-
-- The HCP JSONs expose `mean_ratio`, `within_median`, `between_median`.
-- They contain **no `mean_ratio_pairs` key and no step-0 gate entry.**
-- `mean_ratio` is exactly `between_median / within_median` (verified to 1e-9
-  where the files were available).
-
-That is structurally the **`vs_ctrl` form**, not the `pairs` form.
-
-**Comparability verdict: HCP does not currently have a value of the paper's
-primary metric.** Placing HCP on the same axis as K562/RPE1/Norman compares a
-`vs_ctrl`-shaped quantity against a `pairs`-shaped one. See DISCREPANCY D5. The
-line-by-line source comparison must be completed on the A100 (`scripts/61`
-prints the full script).
-
-Values recorded from an earlier A100 session (**not verified**):
-
-| encoding | d | `mean_ratio` | `within_median` | `between_median` |
+| enc | d | `mean_ratio` | `within_median` | `between_median` |
 |---|---:|---:|---:|---:|
 | LR | 10 | 0.7483833300732464 | 4.884750555542272 | 3.6556658873346146 |
-| LR | 20 | 0.7603583245858845 | 5.403239061317536 | 4.108397800001169 |
-| LR | 30 | 0.7628674458454061 | 5.718036885151888 | 4.362104193826406 |
 | RL | 10 | 0.7949708307350283 | 5.3041699350649685 | 4.216660379639154 |
-| RL | 20 | 0.7846324154240907 | 5.92861169044841 | 4.651780910788822 |
-| RL | 30 | 0.7922280954383233 | 6.18595331953082 | 4.900686016803068 |
 
-Note every value is **below 1.0**, not equal to 1.0.
+Every HCP value is **below 1.0**. The full line-by-line source comparison
+requires `scripts/61`, which prints the script; **§1.4 is the one section still
+resting on inference from key names rather than from source.**
 
 ---
 
-## 2. Screen — sensitivity to configuration ⏳ PENDING A100
+## 2. Screen — sensitivity to configuration ✅ VERIFIED
 
-Requires the 16 files `causalbench/results/screen/{k562,rpe1}_filt{0,1}_n{100,200}_d{5,10}.json`,
-none of which are committed. `scripts/60_verify_evidence.py` §2 emits the full
-table once they are present; it also reports the min/max spread per dataset so
-the stability of the headline number is quantified rather than asserted.
+All 16 configurations. `mean_ratio_pairs` is the primary metric; `vs_ctrl` shown
+for the supplement.
 
-Only two data points are currently on record (from the A100 session, unverified):
-K562 `filt0/n200/d10` pairs = 4.270; RPE1 `filt0/n200/d10` pairs = 2.059.
-**A range for K562 cannot be stated from one configuration.**
+| dataset | filt | NMIN | d | **pairs** | vs_ctrl | `n_envs` |
+|---|---:|---:|---:|---:|---:|---:|
+| K562 | 0 | 200 | 5 | 4.335 | 3.053 | 385 |
+| K562 | 0 | 200 | 10 | **4.270** ← headline | 3.077 | 385 |
+| K562 | 0 | 100 | 5 | 2.257 | 1.604 | 1158 |
+| K562 | 0 | 100 | 10 | 2.228 | 1.550 | 1158 |
+| K562 | 1 | 200 | 5 | 5.633 | 4.745 | 206 |
+| K562 | 1 | 200 | 10 | 5.283 | 4.370 | 206 |
+| K562 | 1 | 100 | 5 | 3.223 | 2.556 | 622 |
+| K562 | 1 | 100 | 10 | 3.166 | 2.422 | 622 |
+| RPE1 | 0 | 200 | 5 | 2.048 | 1.592 | 146 |
+| RPE1 | 0 | 200 | 10 | **2.059** ← headline | 1.671 | 146 |
+| RPE1 | 0 | 100 | 5 | 2.123 | 1.632 | 651 |
+| RPE1 | 0 | 100 | 10 | 2.070 | 1.546 | 651 |
+| RPE1 | 1 | 200 | 5 | 2.497 | 1.967 | 86 |
+| RPE1 | 1 | 200 | 10 | 2.376 | 1.828 | 86 |
+| RPE1 | 1 | 100 | 5 | 3.238 | 2.198 | 383 |
+| RPE1 | 1 | 100 | 10 | 2.973 | 2.005 | 383 |
+
+**K562 `pairs` range [2.228, 5.633], spread 3.405.**
+**RPE1 `pairs` range [2.048, 3.238], spread 1.189.**
+
+### 2.1 The metric is not scale-free in NMIN
+
+Reading down the table, the ratio rises with NMIN and falls with the number of
+environments admitted. K562 `filt0` goes 2.228 (n=100, 1158 envs) → 4.270
+(n=200, 385 envs). This is a property of the construction: the denominator is a
+split-half distance that shrinks as ≈1/√n while the between-environment
+numerator does not. **The ratio is therefore only comparable across datasets at
+matched NMIN.** Any cross-dataset claim must state NMIN.
+
+### 2.2 D9 resolved: the README range is traceable, and it is the whole sweep
+
+`README.md` claims K562 `2.0 – 5.6`. The measured `pairs` sweep is
+[2.228, 5.633]. The upper bound matches (5.633 → 5.6); the lower bound is
+rounded down from 2.228 to 2.0. **The README range is the min–max across all
+eight K562 configurations**, i.e. it is a range over analysis choices, not a
+confidence interval. It should be restated as **[2.23, 5.63] across
+filt × NMIN × d**, or replaced by the single headline configuration.
 
 ---
 
@@ -134,63 +136,51 @@ K562 `filt0/n200/d10` pairs = 4.270; RPE1 `filt0/n200/d10` pairs = 2.059.
 
 Definitions from `causalbench/scripts/04_spectrum.py`:
 
-- `s_sig = svd(M) / sqrt(k)` where `M` is the (k × d) stack of per-environment
-  mean shifts; `s_noi` likewise for a control-derived null `N` of matched shape.
-- `n_dims_above_2x = count(s_sig[i] / s_noi[i] > 2.0)` — a **count of components**.
+- `n_dims_above_2x = count(s_sig[i] / s_noi[i] > 2.0)` — a **count of
+  components** above twice a control-derived null.
 - `participation_ratio = (Σ s_sig)² / Σ s_sig²` — an **effective rank of the
-  signal spectrum alone**, computed without reference to the null.
+  signal spectrum alone**, computed with no reference to the null.
 
-### 3.1 Norman 2019 ✅ VERIFIED
+These are different quantities. See D12.
 
-Source: `causalbench/results/spectrum/norman.json`, `nmin=200`, `seed=0`.
-All five derived quantities per d were recomputed from `sing_signal` /
-`sing_noise` and agree exactly.
+### 3.1 All datasets ✅ VERIFIED
 
-| d | `n_dims_above_2x` | `n_dims_above_noise` | `participation_ratio` | `s2_over_s1` | `sing_ratio[0]` |
-|---:|---:|---:|---:|---:|---:|
-| 10 | 10 / 10 | 10 / 10 | 4.446065832169267 | 0.6582844209194609 | 11.945008095462393 |
-| 20 | 20 / 20 | 20 / 20 | 7.347425728612681 | 0.6679978502032126 | 11.948279299930848 |
-| 50 | **39 / 50** | 50 / 50 | **13.226402291236367** | 0.6833521368943763 | 11.441271378681018 |
+Every entry recomputed from `sing_signal` / `sing_noise`; all agree exactly.
 
-`n_envs = 101`, `n_null = 101` at every d.
+| dataset | d | `dims_above_2x` | `dims_above_noise` | `participation_ratio` | `s2/s1` | `n_envs` |
+|---|---:|---:|---:|---:|---:|---:|
+| K562 | 10 | 9 / 10 | 10 / 10 | 5.050295711497646 | 0.6198524593548168 | 385 |
+| K562 | 20 | 14 / 20 | 20 / 20 | 7.276305600242129 | 0.6335317163746099 | 385 |
+| K562 | 50 | **15 / 50** | 50 / 50 | 11.929814856452163 | 0.6485644940315521 | 385 |
+| RPE1 | 10 | 6 / 10 | 10 / 10 | 3.571238942175779 | 0.2388659303651289 | 146 |
+| RPE1 | 20 | 9 / 20 | 20 / 20 | 5.614722346505135 | 0.2472676152100853 | 146 |
+| RPE1 | 50 | 9 / 50 | 50 / 50 | 11.042364411736862 | 0.24993314940512823 | 146 |
+| Norman | 10 | 10 / 10 | 10 / 10 | 4.446065832169267 | 0.6582844209194609 | 101 |
+| Norman | 20 | 20 / 20 | 20 / 20 | 7.347425728612681 | 0.6679978502032126 | 101 |
+| Norman | 50 | **39 / 50** | 50 / 50 | 13.226402291236367 | 0.6833521368943763 | 101 |
+| HCP LR | 10 | **0** | 3 | 4.7356 | — | — |
+| HCP LR | 20 | **0** | 3 | 4.9517 | — | — |
+| HCP LR | 30 | **0** | — | 5.1423 | — | — |
+| HCP LR | 50 | **0** | — | 5.1788 | — | — |
+| HCP RL | 10 | **1** | 1 | 4.5126 | — | — |
+| HCP RL | 20 | **0** | 0 | 4.8827 | — | — |
+| HCP RL | 30 | **0** | — | 4.9968 | — | — |
+| HCP RL | 50 | **0** | — | 5.0326 | — | — |
 
-### 3.2 Why 39 and 13.2 are not in conflict
+**HCP has `max_possible_dims = 6` and `len(sing_ratio) = 6` at every d**, capped
+by the 7-task design. "dims above 2× out of d" is therefore not on the same
+denominator as the CausalBench datasets, where the spectrum has length d.
 
-They measure different things and are not expected to match:
+### 3.2 Why Norman's 39 and 13.2 do not conflict
 
-- **39/50** counts how many components exceed twice the null. It is a threshold
-  count over a *ratio* of two spectra, so it grows as more of the spectrum's tail
-  clears a fixed bar. At d=50 Norman still has 39 components above 2× noise
-  because its null spectrum decays fast.
-- **13.23** is the participation ratio of the *signal spectrum alone*. It is
-  dominated by the leading components and is insensitive to a long shallow tail.
-  For a spectrum with one large and many small values it stays low.
+**39/50** is a threshold count over a *ratio of two spectra*: it grows as more of
+the tail clears a fixed bar, and Norman's null spectrum decays fast.
+**13.23** is the participation ratio of the *signal spectrum alone*: dominated by
+the leading components, insensitive to a long shallow tail.
 
-The two therefore diverge exactly when the signal spectrum has a long tail that
-sits above the null but carries little energy. That is a property of the
-construction, readable from the code — **no anomaly, and no discrepancy.**
-Whether the paper reports the count or the effective rank is a presentation
-choice; they must not be described as the same quantity.
-
-### 3.3 CausalBench and HCP ⏳ PENDING A100
-
-`causalbench/results/spectrum/{k562,rpe1}_filt0_n200_d{10,20,50}.json` are not
-committed. Values from an earlier A100 session (**not verified**):
-
-| dataset | d | `dims_above_2x` | `participation_ratio` | `s2_over_s1` |
-|---|---:|---:|---:|---:|
-| K562 | 10 | 9 / 10 | 5.05 | 0.620 |
-| K562 | 20 | 14 / 20 | 7.28 | 0.634 |
-| K562 | 50 | 15 / 50 | 11.93 | 0.649 |
-| RPE1 | 10 | 6 / 10 | 3.57 | 0.239 |
-| RPE1 | 20 | 9 / 20 | 5.61 | 0.247 |
-| RPE1 | 50 | 9 / 50 | 11.04 | 0.250 |
-
-HCP (`hcp/results/mean_shift_{LR,RL}.json`, `max_possible_dims = 6`, capped by
-the 7-task design): LR `dims_above_2x` = 0 at d=10, 20, 30; RL = 1, 0, 0.
-Participation ratio ≈ 4.5–5.0. **No d yields more than one component above 2×
-noise.** Note the HCP spectrum has at most 6 entries regardless of d, so
-"dims above 2× / d" is not on the same denominator as the CausalBench datasets.
+They diverge exactly when the signal spectrum has a long tail above the null
+carrying little energy. Readable from the code; **no anomaly and no discrepancy.**
+But the two must never be reported in one column — see D12.
 
 ---
 
@@ -198,23 +188,22 @@ noise.** Note the HCP spectrum has at most 6 entries regardless of d, so
 
 Source: `results/cf_estimator/k562.json`, `nmin=200`.
 
-| quantity | value | key |
-|---|---:|---|
-| environments | 385 | `$.n_envs` |
-| stable environments | 298 | `$.n_stable` |
-| **control-cell gate** `gate_cos_median` | **−0.006828483048328142** | `$.gate_cos_median` |
-| `gate_cos_mean` | −0.009455955587287365 | `$.gate_cos_mean` |
-| split-half `stab_cos_median` | 0.6842780722525882 | `$.stab_cos_median` |
-| `stab_cos_q10` | 0.06632494098453602 | `$.stab_cos_q10` |
-| `stab_cos_q90` | 0.8803670910740762 | `$.stab_cos_q90` |
-| `frac_cos_gt_0p3` | 0.7168831168831169 | `$.frac_cos_gt_0p3` |
-| `rank1_median` | 0.025447037879799767 | `$.rank1_median` |
-| `shift_norm_median` | 2.5391828429016745 | `$.shift_norm_median` |
+| quantity | value |
+|---|---:|
+| environments | 385 |
+| stable environments | 298 |
+| **control-cell gate** `gate_cos_median` | **−0.006828483048328142** |
+| `gate_cos_mean` | −0.009455955587287365 |
+| split-half `stab_cos_median` | 0.6842780722525882 |
+| `stab_cos_q10` | 0.06632494098453602 |
+| `stab_cos_q90` | 0.8803670910740762 |
+| `frac_cos_gt_0p3` | 0.7168831168831169 |
+| `rank1_median` | 0.025447037879799767 |
+| `shift_norm_median` | 2.5391828429016745 |
 
-Held-out reconstruction R², `$.basis.<d>`. `gain` recomputed as
-`shift_basis_r2 − control_pca_r2` for every d; all five agree to 1e-9 ✅.
+Held-out reconstruction R²; `gain` recomputed for every d, all agree to 1e-9 ✅.
 
-| d | `shift_basis_r2` | `control_pca_r2` | `gain` (stored = recomputed) |
+| d | `shift_basis_r2` | `control_pca_r2` | `gain` |
 |---:|---:|---:|---:|
 | 5 | 0.7029684174159108 | 0.4846019163349933 | 0.21836650108091749 |
 | 10 | 0.7642257409720432 | 0.592387419064074 | 0.17183832190796922 |
@@ -222,29 +211,20 @@ Held-out reconstruction R², `$.basis.<d>`. `gain` recomputed as
 | 20 | 0.7992939864369504 | 0.630621176988112 | 0.16867280944883833 |
 | 30 | 0.8165562129322685 | 0.6492430406894609 | 0.16731317224280762 |
 
-The control-cell gate returning ≈0 is the intended known-answer result: two halves
-of the control pool share no common shift direction.
+The control-cell gate returning ≈0 is the intended known-answer result.
 
 ---
 
 ## 5. Zero-shot baselines, canonical split ✅ VERIFIED
 
-Source: `results/zeroshot_canonical/k562.json`.
-Split provenance confirmed:
+Split provenance: `split_file = k562_zeroshot_split.json`, `n_train = 308`,
+`n_heldout = 77`, `seed = 0`, `nmin = 200`, `d_latent = 15`. All confirmed
+against the split file itself, including `len(train_perturbations) = 308`,
+`len(heldout_perturbations) = 77`, `n_usable = 385 = 308 + 77`, and
+`385 = count(cells_per_perturbation ≥ 200)` ✅.
 
-| quantity | value | verified against |
-|---|---:|---|
-| `split_file` | `k562_zeroshot_split.json` | `$.split_file` |
-| `n_train` | **308** | matches `results/splits/k562_zeroshot_split.json $.n_train` ✅ and `len($.train_perturbations)` ✅ |
-| `n_heldout` | **77** | matches split `$.n_heldout` ✅ and `len($.heldout_perturbations)` ✅ |
-| `n_usable` | 385 | equals `n_train + n_heldout` ✅ and equals `count(cells_per_perturbation ≥ 200)` ✅ |
-| `d_latent` | 15 | `$.d_latent` |
-| split `seed` | 0 | split `$.seed` |
-| split `nmin` | 200 | split `$.nmin` |
-
-**All 24 baseline statistics were recomputed from the 462-row
-`$.per_perturbation` array (6 methods × 77 held-out genes) and every one agrees
-exactly.** ✅
+**All 24 baseline statistics recomputed from the 462-row `$.per_perturbation`
+array (6 methods × 77 genes); every one agrees exactly.** ✅
 
 | method | median R² | mean R² | median cos | `frac_beats_gmean` |
 |---|---:|---:|---:|---:|
@@ -255,72 +235,55 @@ exactly.** ✅
 | `ridge_basis` | **0.22558014602202647** | 0.033191204082618844 | 0.5010799951288413 | 0.7012987012987013 |
 | `CEILING` | **0.5274920724871424** | 0.3168453803721219 | 0.7690887650072865 | 0.8311688311688312 |
 
-`_headroom = 0.3984692066541655`, recomputed as `CEILING − global_mean` ✅.
-Ridge capture = `(0.22558 − 0.12902) / 0.39847` = **24.232055721397924 %** ✅.
-
-> ⚠️ `frac_beats_gmean` here is a **per-gene** comparison (each gene's R² against
-> that same gene's `global_mean` R²), not a comparison against the constant
-> 0.129. The model files use the constant. See DISCREPANCY D3.
+`_headroom = 0.3984692066541655` ✅. Ridge capture = **24.232055721397924 %** ✅.
 
 ---
 
-## 6. The model result ✅ VERIFIED (except epoch-10)
+## 6. The model result ✅ VERIFIED
 
-Sources: `results/model/zeroshot_{shift,random}.json`,
-`results/model/zeroshot_nodag_{shift,random}.json`. Each has a 77-entry
-`$.per_gene` array; `final_median_r2`, `final_mean_r2`, `frac_beats_gmean` and
-`frac_beats_ridge` were all recomputed from it and agree exactly. ✅
+All four arms; `final_median_r2`, `final_mean_r2`, `frac_beats_gmean`,
+`frac_beats_ridge` recomputed from each 77-entry `$.per_gene` array ✅.
 
-| arm | best median R² | final median R² | final mean R² | `frac_beats_gmean` | `frac_beats_ridge` | per-gene R² range |
-|---|---:|---:|---:|---:|---:|---|
-| full / shift | 0.009694068092076957 | 0.012570545400028665 | −0.0518394092777882 | 0.0 | 0.0 | [−0.7075, 0.1128] |
-| full / random | −0.005696563328918991 | −0.005466684895471641 | −0.006320124530840101 | 0.0 | 0.0 | [−0.0427, 0.0221] |
-| no-DAG / shift | −0.04224525495841136 | −0.04793495530415348 | −0.10737029539395729 | 0.0 | 0.0 | [−0.7025, 0.0520] |
-| no-DAG / random | 0.013044818906979505 | 0.013023438700739853 | 0.013743959567562424 | 0.0 | 0.0 | [−0.0304, 0.0704] |
+| arm | best median R² | final median R² | final mean R² | per-gene R² range |
+|---|---:|---:|---:|---|
+| full / shift | 0.009694068092076957 | 0.012570545400028665 | −0.0518394092777882 | [−0.7075, 0.1128] |
+| full / random | −0.005696563328918991 | −0.005466684895471641 | −0.006320124530840101 | [−0.0427, 0.0221] |
+| no-DAG / shift | −0.04224525495841136 | −0.04793495530415348 | −0.10737029539395729 | [−0.7025, 0.0520] |
+| no-DAG / random | 0.013044818906979505 | 0.013023438700739853 | 0.013743959567562424 | [−0.0304, 0.0704] |
 
-Across all four arms: **0 of 77 held-out genes exceed 0.129, and 0 of 77 exceed
-0.226.** Recomputed directly from the per-gene arrays ✅.
+`frac_beats_gmean` and `frac_beats_ridge` are **0.0 for all four arms**:
+**0 of 77 held-out genes exceed 0.129, and 0 of 77 exceed 0.226** ✅.
 
-`results/model/SUMMARY.json` was cross-checked field by field against the four
-source files and the baselines file: **28 fields, all agree.** ✅
+`results/model/SUMMARY.json` cross-checked field by field: **28 fields, all
+agree** ✅.
 
 ### 6.1 DAG condition number ✅ VERIFIED
 
-Source: `results/model/dag_stability.csv`, 223 rows, epochs 0–14,
-shift-init, `log_every=50`.
+`results/model/dag_stability.csv`, 223 rows, epochs 0–14, shift-init.
 
 | quantity | value |
 |---|---:|
-| `cond2` min | 1.000471 |
-| `cond2` max | **1.812932** |
-| `cond2` final | 1.569744 |
-| `inv_norm_2` min | 1.000219 |
-| `inv_norm_2` max | 1.357119 |
-| `G_frobenius` min | 1.20544 |
-| `G_frobenius` max | 1.587544 |
+| `cond2` min / max / final | 1.000471 / **1.812932** / 1.569744 |
+| `inv_norm_2` min / max | 1.000219 / 1.357119 |
+| `G_frobenius` min / max | 1.20544 / 1.587544 |
 
-Zero NaNs in all three columns. The condition number never approaches 10³.
+Zero NaNs. The condition number never approaches 10³.
 
-### 6.2 Epoch-10 value ⏳ PENDING A100
+### 6.2 Training trajectories ✅ VERIFIED — D7 resolved
 
-`results/model/trajectories/*.json` were generated on the A100 but **never
-committed**, and `logs/` is gitignored. The epoch-10 value therefore **cannot be
-traced from this repository for any arm.**
+`results/model/trajectories/*.json`, 11 evaluation points per arm.
 
-Values seen in an A100 session (**not verified, and note they disagree with an
-earlier record — see DISCREPANCY D7**):
+| arm | **epoch-10 R²** | trajectory min | `best_median_r2` = max(trajectory) |
+|---|---:|---:|---|
+| full / shift | **−1.087** | −1.087 | 0.0097 ✅ |
+| full / random | −0.0611 | −0.2056 | −0.0057 ✅ |
+| no-DAG / shift | **−0.9972** | −0.9972 | −0.0422 ✅ |
+| no-DAG / random | +0.012 | −0.0997 | 0.0130 ✅ |
 
-| arm | peak | at epoch | final | at epoch |
-|---|---:|---:|---:|---:|
-| full / shift | +0.0097 | 20 | −0.0055 | 99 |
-| full / random | −0.0057 | 0 | −0.0938 | 99 |
-| no-DAG / shift | −0.0422 | 20 | −0.0664 | 99 |
-| no-DAG / random | +0.0130 | 0 | −0.0804 | 99 |
-
-An earlier handoff recorded a shift-init epoch-10 value of **−1.09**, and a
-later note recorded **−0.997** for the no-DAG shift-init arm. Neither is
-traceable to a committed file. **Do not use either number until the trajectory
-JSONs are committed.**
+Both earlier records were correct, merely rounded: the handoff's **−1.09** is
+−1.087, and the later note's **−0.997** is −0.9972. The epoch-10 excursion is
+the trajectory minimum for both shift-init arms, and it occurs **with and
+without the DAG**.
 
 ---
 
@@ -328,223 +291,182 @@ JSONs are committed.**
 
 ### 7.1 From the split files ✅ VERIFIED
 
-| quantity | K562 | RPE1 | source |
-|---|---:|---:|---|
-| genes recorded in `cells_per_perturbation` | 1158 | 651 | `results/splits/<ds>_zeroshot_split.json` |
-| environments clearing NMIN=200 (`n_usable`) | **385** | **146** | `$.n_usable`, recomputed from the cell counts ✅ |
-| `n_train` | 308 | 117 | `$.n_train` |
-| `n_heldout` | 77 | 29 | `$.n_heldout` |
-| cells/env median (all recorded genes) | 165.0 | 146.0 | recomputed from `$.cells_per_perturbation` |
-| cells/env min | 101.0 | 101.0 | recomputed |
-| cells/env max | 1996.0 | 3580.0 | recomputed |
-| seed | 0 | 0 | `$.seed` |
+| quantity | K562 | RPE1 |
+|---|---:|---:|
+| genes in `cells_per_perturbation` | 1158 | 651 |
+| environments clearing NMIN=200 | **385** | **146** |
+| `n_train` / `n_heldout` | 308 / 77 | 117 / 29 |
+| cells/env median (all recorded) | 165.0 | 146.0 |
+| cells/env min / max | 101.0 / 1996.0 | 101.0 / 3580.0 |
+| seed | 0 | 0 |
 
-Note the median above is over **all** recorded genes including those below NMIN;
-the median over the 385/146 that clear NMIN is a different number and is not
-stored anywhere. `scripts/61` computes it from the raw data.
+The median is over **all** recorded genes including those below NMIN. The median
+over the 385 / 146 that clear NMIN is a different number, stored nowhere.
 
-### 7.2 Cells, features, control cells, batches ⏳ PENDING A100
+### 7.2 Cells, features, control cells, batches ⏳ PENDING
 
-Not present in any results file. `scripts/61_collect_descriptors.py` reads
-`dataset_{k562,rpe1}.npz`, `Norman2019_raw.h5ad` and `causalbench_k562.h5ad`
-and emits: total cells, features, excluded cells, control cells, unique
-perturbations, cells-per-perturbation quantiles, value range, fraction exactly
-zero, whether values are integers, and how many targets appear among the feature
-columns.
+Not in any results file. `scripts/61_collect_descriptors.py` emits them.
 
-Preprocessing facts already established and traceable:
-
-- **Norman 2019** is CPA-preprocessed and log-normalised despite the `_raw`
-  filename — values span 0–8.5 and are non-integer. 5000 highly-variable genes.
-  0 of 105 single-perturbation targets appear among the 5000 feature columns
-  (verified during the Norman screen run; recorded in
-  `causalbench/results/screen/norman.json` as
-  `target_column_drop_is_noop: true`) ✅.
-- **CausalBench** is CRISPR **interference**; **Norman** is CRISPR
-  **activation**. Different perturbation direction.
-- Batch identity (`gem_group`) exists only in the raw `.h5ad`, not in the `.npz`.
+Established and traceable:
+- **Norman 2019**: CPA-preprocessed, log-normalised despite the `_raw` filename;
+  5000 HVGs; **0 of 105 targets appear among the feature columns**
+  (`norman.json $.target_column_drop_is_noop = true`) ✅.
+- **CausalBench** is CRISPR interference; **Norman** is CRISPR activation.
+- Batch identity (`gem_group`) exists only in the raw `.h5ad`.
 
 ---
 
-## 8. Third-party provenance
+## 8. Third-party provenance ✅ VERIFIED
 
-### 8.1 Commit hashes ✅ VERIFIED
-
-| repository | commit | source |
-|---|---|---|
-| discrepancy_vae (Zhang et al., NeurIPS 2023) | `4451fdbc9d0aa3a1dee4e7d1b743a434e98fa58a` | `vendor_analysis/DVAE_COMMIT.txt` |
-| causalbench_repo (Chevalley et al., NeurIPS 2023) | `1a2143cffdc85f835b41ce8d52034be1bf903e71` | `vendor_analysis/CAUSALBENCH_COMMIT.txt` |
-
-`COMMITS.txt` at the repository root mirrors both and agrees ✅.
-
-### 8.2 Our modifications to their tree ✅ VERIFIED
-
-`vendor_analysis/my_changes.patch`: **4 hunks, touching only `src/dataset.py`.**
-Both hunks are dataset-path string replacements (`/home/jzhang/...` →
-`/workspace/external/...`). No change to model or loss code.
-
-### 8.3 Our training used their `loss_function` unmodified ✅ VERIFIED
-
-`model/cb_train.py`:
-- `from train import loss_function` → **True**
-- defines its own `loss_function` → **False**
-
-Same two checks pass for `scripts/27_no_causal_ablation.py`.
-
-### 8.4 Hyperparameters actually used ✅ VERIFIED (our defaults)
-
-From `model/cb_train.py` argparse defaults:
-
-| flag | default |
+| repository | commit |
 |---|---|
-| `--zdim` | 15 |
-| `--epochs` | 100 |
-| `--batch` | 128 |
-| `--lr` | 1e-3 |
-| `--mxAlpha` | 10.0 |
-| `--mxBeta` | 2.0 |
-| `--mxTemp` | 5.0 |
-| `--MMD_sigma` | 1000.0 |
-| `--kernel_num` | 10 |
-| `--lmbda` | 1e-3 |
-| `--init` | `shift` |
-| `--device` | `cuda:0` |
+| discrepancy_vae (Zhang et al., NeurIPS 2023) | `4451fdbc9d0aa3a1dee4e7d1b743a434e98fa58a` |
+| causalbench_repo (Chevalley et al., NeurIPS 2023) | `1a2143cffdc85f835b41ce8d52034be1bf903e71` |
 
-⏳ **PENDING A100:** the corresponding defaults in *their* `src/train.py`, to
-confirm ours match theirs where we did not deliberately change them.
-`scripts/61` prints their argparse defaults and the `loss_function` signature.
+`COMMITS.txt` mirrors both and agrees ✅.
+
+`vendor_analysis/my_changes.patch`: **4 hunks, touching only `src/dataset.py`** —
+dataset-path strings. No model or loss change.
+
+`model/cb_train.py`: `from train import loss_function` = **True**; defines its own
+`loss_function` = **False**. Same for `scripts/27_no_causal_ablation.py` ✅.
+
+Our hyperparameters (argparse defaults): `zdim=15`, `epochs=100`, `batch=128`,
+`lr=1e-3`, `mxAlpha=10.0`, `mxBeta=2.0`, `mxTemp=5.0`, `MMD_sigma=1000.0`,
+`kernel_num=10`, `lmbda=1e-3`.
+
+⏳ Their corresponding defaults still to be printed by `scripts/61`.
 
 ---
 
 # DISCREPANCIES AND OPEN ITEMS
 
-11 findings. Machine-readable copy: `paper/crosscheck_findings.json`.
+Ordered by severity. Machine-readable copy: `paper/crosscheck_findings.json`.
 
-### D1 — Norman headline uses the SECONDARY metric (HIGH)
+### D13 — RPE1 clears the workability threshold on the primary metric (CRITICAL)
 
-| | |
+RPE1 is claimed as one of the two **correctly-flagged negatives** underpinning
+the screen's predictive validity. On the primary metric it is not flagged:
+
+| metric | RPE1 range across all 8 configs | vs 2.0 threshold |
+|---|---|---|
+| **`mean_ratio_pairs` (primary)** | **[2.048, 3.238]** | **above at every configuration** |
+| `mean_ratio_vs_ctrl` (secondary) | [1.546, 2.198] | below at 6 of 8 |
+
+Under `mean_ratio_pairs`, RPE1 would be classified **workable** at every single
+configuration, including the headline one (2.059). The "RPE1 correctly flagged as
+too weak" claim holds **only** under `vs_ctrl` — the metric that §1.1 establishes
+is not calibrated.
+
+This directly affects the predictive-validity count. If the primary metric is
+`pairs`, the screen has one negative (HCP), not two, and RPE1 becomes a
+candidate **false positive** — a dataset the screen passes that was
+independently found unusable (negative zero-shot noise ceiling). Resolving this
+is prerequisite to any statement about how many datasets the screen has
+correctly classified.
+
+### D12 — The README "effective dim" column contains three different metrics (HIGH)
+
+| README cell | value | what it actually is | that dataset's `dims_above_2x` |
+|---|---:|---|---:|
+| CausalBench `~15` | 15 | `n_dims_above_2x` at d=50 | 15 ✅ |
+| Norman `13.2` | 13.226 | **`participation_ratio`** at d=50 | **39** |
+| HCP `3` | 3 | **`n_dims_above_noise`** (1× threshold) | **0** |
+
+Three rows, three quantities, one column header. Under a single consistent
+metric the column reads either 15 / 39 / 0 (`dims_above_2x`) or
+11.93 / 13.23 / 4.74 (`participation_ratio`) — and the two orderings differ.
+
+### D4 — Model and baselines are scored against different targets (HIGH)
+
+| file | target |
 |---|---|
-| Claimed | **3.19** |
-| Claim sources | `README.md` headline table; `causalbench/results/screen/norman_verdict.txt` |
-| Actual | `mean_ratio_pairs` = **3.7147385914720377** (primary); `mean_ratio_vs_ctrl` = 3.1895884263497645 (secondary) |
-| Authority | `causalbench/results/screen/norman.json $.screen[nmin=200,d=10]` |
+| `scripts/25_zeroshot_baselines.py` | **half B** of the held-out cells (`A, B = shift(cells[:h]), shift(cells[h:])`; all methods scored against `B`) |
+| `model/cb_train.py::zeroshot_eval` | the **full-data** mean shift (`truth = X[iv==g].mean(0) - ctrl_mu`) |
 
-Both the README table and the saved verdict sentence quote `vs_ctrl`. If
-`mean_ratio_pairs` is the primary metric, both must be restated as 3.71 —
-**or** the paper must state explicitly that it reports `vs_ctrl`.
-
-### D2 — Figure 2 mixes two metrics on one axis (HIGH)
-
-`scripts/50_figures.py::fig2_mean_shift_ratio` plots bar heights from
-`mean_ratio_vs_ctrl` (6 references in the file) while its null line and gate
-band come from `mean_ratio_pairs` (4 references). Already known; **still
-unfixed in the script.** Every remaining `mean_ratio_vs_ctrl` use in that file
-must be reviewed: it also drives the FIG 2 printout and the reference-comparison
-block.
+The R² *formula* is identical ✅ (`1 − RSS / Σtrue²`), but the model's target is
+the less noisy of the two. Yet `cb_train.py` hard-codes **0.129** and **0.226**
+— produced by the half-B evaluation — as its comparison thresholds. Affects
+every "model vs ridge" statement.
 
 ### D3 — `frac_beats_gmean` denotes two different quantities (HIGH)
 
 | file | definition |
 |---|---|
-| `scripts/25_zeroshot_baselines.py` | per-gene: `r2 > gm_by_g[gene]`, i.e. that gene's own `global_mean` R² |
+| `scripts/25_zeroshot_baselines.py` | per-gene: `r2 > gm_by_g[gene]` |
 | `model/cb_train.py` | constant: `np.mean(zs > 0.129)` |
 
-Both are internally correct and both recompute exactly ✅ — but they are not the
-same statistic. The baselines' `ridge_basis` value of **0.701** and the models'
-**0.000** are answers to different questions and must not be tabulated in one
-column.
+Both recompute exactly ✅ and both are internally correct, but ridge's **0.701**
+and the models' **0.000** answer different questions and cannot share a column.
 
-### D4 — The model and the baselines are scored against different targets (HIGH)
+### D1 — Norman headline uses the secondary metric (HIGH)
 
-| file | target of the R² |
-|---|---|
-| `scripts/25_zeroshot_baselines.py` | **half B** of the held-out perturbation's cells (`A, B = shift(cells[:h]), shift(cells[h:])`; every method scored against `B`) |
-| `model/cb_train.py::zeroshot_eval` | the **full-data** mean shift (`truth = X[iv==g].mean(0) - ctrl_mu`) |
+`README.md` and `causalbench/results/screen/norman_verdict.txt` both state
+**3.19** = `mean_ratio_vs_ctrl`. The primary metric gives **3.7147385914720377**.
 
-The R² *formula* is identical in both files ✅ (`1 − RSS / Σtrue²`), but the
-targets differ. The model's target is the less noisy of the two, so model R² and
-baseline R² are not on a common scale — yet `cb_train.py` hard-codes the
-constants **0.129** and **0.226**, which were produced by the half-B evaluation,
-as its comparison thresholds. This is the most consequential item in the
-document and it affects every "model vs ridge" statement.
+Note also that `norman.json` contains a key literally named
+`summary.primary_mean_ratio_vs_ctrl` — the file asserts the wrong metric is
+primary.
+
+### D2 — Figure 2 mixes two metrics on one axis (HIGH)
+
+`scripts/50_figures.py::fig2_mean_shift_ratio` takes bar heights from
+`mean_ratio_vs_ctrl` while its null line and gate band come from
+`mean_ratio_pairs`. **Still unfixed**; the script is deliberately left
+uncommitted for this reason.
 
 ### D5 — HCP has no value of the primary metric (HIGH)
 
-HCP's ratio comes from `hcp/scripts/mean_shift_v2.py`, not `03_screen.py`. Its
-JSONs expose `mean_ratio`, `within_median`, `between_median` and **no
-`mean_ratio_pairs`, no step-0 gate**. `mean_ratio == between_median /
-within_median`, which is structurally the `vs_ctrl` form. Placing HCP beside
-K562/RPE1/Norman on a `mean_ratio_pairs` axis compares different quantities.
-Full line-by-line source comparison is pending on the A100.
+HCP's ratio comes from `hcp/scripts/mean_shift_v2.py`. Its JSONs have
+`mean_ratio`, `within_median`, `between_median` and **no `mean_ratio_pairs`, no
+step-0 gate**. `mean_ratio == between/within` ✅ — structurally the `vs_ctrl`
+form. Placing HCP on a `mean_ratio_pairs` axis compares different quantities.
+Additionally HCP's spectrum has only 6 entries at every d (`max_possible_dims=6`),
+so its "out of d" denominator differs from the other datasets.
 
-### D6 — README HCP value 1.00 is not traceable (MEDIUM)
+### D6 — README HCP value 1.00 contradicted (MEDIUM) — CONFIRMED
 
-`README.md` states HCP mean-shift ratio = **1.00**. Every recorded HCP
-`mean_ratio` is **below** 1.0 (LR 0.748 / 0.760 / 0.763; RL 0.795 / 0.785 /
-0.792 at d = 10 / 20 / 30). No results file contains 1.00. Either the README is
-rounding a sub-null value up to the null, or it is quoting a different quantity.
+`README.md` states **1.00**. Measured: **0.7484** (LR, d=10) and **0.7950**
+(RL, d=10); every HCP value at every d is below 1.0. No results file contains
+1.00.
 
-### D7 — Epoch-10 crash value: three different numbers on record (MEDIUM)
+### D9 — README K562 range is a sweep over analysis choices (MEDIUM) — RESOLVED
 
-- Handoff document: shift-init epoch-10 = **−1.09**
-- Later session note: no-DAG shift-init epoch-10 = **−0.997**
-- A100 trajectory parse: full/shift **peak** +0.0097 at epoch 20; no epoch-10
-  value quoted
-
-None is traceable to a committed file. `results/model/trajectories/` is not in
-the repository and `logs/` is gitignored. **Unusable until committed.**
+`2.0 – 5.6` is the min–max of `mean_ratio_pairs` across all eight K562
+configurations, measured as **[2.228, 5.633]**. Upper bound matches; lower bound
+rounded down from 2.228. It is a range over `filt × NMIN × d`, not a confidence
+interval, and must be labelled as such.
 
 ### D8 — README CEILING rounds the wrong way (LOW)
 
-`README.md` gives CEILING as **+0.528**; the stored value is
-**0.5274920724871424**, which rounds to 0.527. The same 0.528 appears in
-`norman_verdict.txt` and in the FIG 6 baseline line. Cosmetic, but it is
-propagated to three places.
+`README.md` gives **+0.528**; stored value is **0.5274920724871424**, which
+rounds to 0.527. The same 0.528 appears in `norman_verdict.txt` and in the FIG 6
+baseline line — propagated to three places.
 
-### D9 — README K562 range "2.0 – 5.6" is not traceable (MEDIUM)
+### D7 — Epoch-10 value (RESOLVED)
 
-No committed file supports it. Only one K562 configuration is on record
-(`filt0/n200/d10`: pairs 4.270, vs_ctrl 3.077). The range presumably spans the
-16-configuration sweep, but neither the configurations nor the metric are stated,
-and the files are uncommitted.
+Now traceable: `full_shift` **−1.087**, `nodag_shift` **−0.9972**. Both earlier
+records (−1.09, −0.997) were correct. Closed.
 
-### D10 — README "CausalBench effective dim ~15" is ambiguous and untraceable (MEDIUM)
+### D10 — "CausalBench effective dim ~15" (RESOLVED into D12)
 
-Not in any committed file. Additionally ambiguous between `dims_above_2x`
-(K562 = 15 at d=50, from the unverified A100 record) and `participation_ratio`
-(K562 = 11.93 at d=50). These are different quantities that happen to be close
-for K562 — but for Norman they are 39 and 13.2, so the ambiguity is not benign.
+Confirmed as `n_dims_above_2x` at d=50 for K562 = 15 ✅. The problem is not this
+number but the column it sits in — see D12.
 
-### D11 — README "HCP effective dim 3 (group only)" is not traceable (MEDIUM)
+### Open items
 
-The qualifier "group only" appears in no results file key. The HCP JSONs report
-`n_dims_above_2x` of 0 (LR, all d) and 1 then 0 (RL). The value 3 matches
-`n_dims_above_noise` at d=10 and d=20 for LR — i.e. the **1×** threshold, not
-the 2× threshold used for every other dataset.
+1. **§1.4** — line-by-line comparison of `hcp/scripts/mean_shift_v2.py` against
+   `03_screen.py`. Requires `scripts/61`. This is the only section resting on
+   inference from key names.
+2. **§7.2** — cells, features, control cells, batches. Requires `scripts/61`.
+3. **§8** — third-party argparse defaults, to confirm ours match where not
+   deliberately changed. Requires `scripts/61`.
 
----
-
-## Where `mean_ratio_vs_ctrl` is still in use
+### Where `mean_ratio_vs_ctrl` is still in use
 
 | location | use |
 |---|---|
-| `scripts/50_figures.py` fig2 | bar heights, printout, reference table |
-| `scripts/50_figures.py` fig4 | `coef_ratio_vs_ctrl` for K562 (separate metric, but same `vs_ctrl` construction) |
-| `README.md` | Norman 3.19, and the K562/HCP entries |
+| `scripts/50_figures.py` fig2 | bar heights, printout, reference table (D2) |
+| `README.md` | Norman 3.19, K562 range, HCP row |
 | `causalbench/results/screen/norman_verdict.txt` | the saved verdict sentence |
-| `causalbench/results/screen/norman.json` | `summary.primary_mean_ratio_vs_ctrl` is labelled *primary* |
-
-The last item is worth noting: the key **name** inside `norman.json` asserts that
-`vs_ctrl` is primary. That label contradicts the current metric decision.
-
----
-
-## What is still needed to close this document
-
-1. Commit `causalbench/results/screen/{k562,rpe1}_*.json` (16 files) and
-   `causalbench/results/spectrum/{k562,rpe1}_*.json` (6 files) — closes §1.3,
-   §2, §3.3, D9, D10.
-2. Commit `results/model/trajectories/*.json` — closes §6.2 and D7.
-3. Run `scripts/61_collect_descriptors.py` — closes §7.2, §8.4, D5, D6, D11.
-4. Re-run `scripts/60_verify_evidence.py` and `scripts/62_crosscheck_claims.py`
-   on the A100 with everything present, and append the totals here.
+| `causalbench/results/screen/norman.json` | key named `summary.primary_mean_ratio_vs_ctrl` |
