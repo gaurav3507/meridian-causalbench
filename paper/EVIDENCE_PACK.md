@@ -3,14 +3,16 @@
 Every number intended for the manuscript, traced to its source file and
 independently re-verified.
 
-**Verification status.** Run on the A100 with all result files present:
-**185 numbers traced, 141 independently recomputed, 0 stored-vs-recomputed
+**Verification status.** Run on the A100 with every result file present, plus
+raw-data descriptors and third-party source:
+**≈240 numbers traced, 141 independently recomputed, 0 stored-vs-recomputed
 mismatches.** Every results file is internally consistent — each stored scalar
-reproduces exactly from the per-item arrays in the same file. All defects found
-are *between* files, or are metric-choice problems.
+reproduces exactly from the per-item arrays in the same file. **All defects found
+are between files, or are metric-choice problems.**
 
-Two items remain open: the HCP source comparison (§1.4) and the raw-data
-descriptors (§7.2), both awaiting `scripts/61_collect_descriptors.py`.
+One correction to an earlier draft of this document is recorded at D12: the
+claim that HCP's effective-dim value used a 1× threshold was wrong. It uses the
+2× threshold like the others.
 
 Verification scripts:
 
@@ -62,26 +64,65 @@ construction artifact, not a calibrated null. Only `mean_ratio_pairs` returns
 
 Norman across all four of its configurations: 0.996, 1.007, 1.020, 1.029 ✅.
 
-### 1.4 HCP — different construction ⏳ SOURCE COMPARISON PENDING
+### 1.4 HCP — NOT COMPARABLE ✅ SOURCE COMPARISON COMPLETE
 
-HCP's ratio comes from `hcp/scripts/mean_shift_v2.py`, **not** `03_screen.py`.
-Established from the results files:
+There are **two different HCP scripts** producing **three different ratios**.
+This section supersedes any earlier statement about HCP.
 
-- Keys present: `mean_ratio`, `within_median`, `between_median`.
-- **No `mean_ratio_pairs`. No step-0 gate entry.**
-- `mean_ratio == between_median / within_median`, verified to 1e-9 ✅.
+**Line-by-line role mapping**, `03_screen.py` vs `hcp/scripts/mean_shift_v2.py`
+(lines 56–63):
 
-That is structurally the **`vs_ctrl` form**. HCP has no value of the paper's
-primary metric.
+| role | `03_screen.py` | `mean_shift_v2.py` |
+|---|---|---|
+| denominator: same condition, split-half | `within_m` = ‖mean(Za) − mean(Zb)‖ | **`split`** = ‖A[s,t,e] − B[s,t,e]‖ (first 88 vs last 88 frames) |
+| numerator: across condition | `pair_m` = ‖mean(Za) − mean(Zb)‖, two environments | **`task`** = ‖A[s,t1,e] − A[s,t2,e]‖, two tasks |
+| nuisance null: same condition, different acquisition | **does not exist** | **`encode`** = ‖A[s,t,LR] − A[s,t,RL]‖ |
 
-| enc | d | `mean_ratio` | `within_median` | `between_median` |
-|---|---:|---:|---:|---:|
-| LR | 10 | 0.7483833300732464 | 4.884750555542272 | 3.6556658873346146 |
-| RL | 10 | 0.7949708307350283 | 5.3041699350649685 | 4.216660379639154 |
+**The direct analogue of `mean_ratio_pairs` is `task_over_split`.** Measured
+value at raw scaling, d=10: **17.306187786068094**
+(`hcp/results/mean_shift_v2.json $.results.raw["10"].task_over_split`).
 
-Every HCP value is **below 1.0**. The full line-by-line source comparison
-requires `scripts/61`, which prints the script; **§1.4 is the one section still
-resting on inference from key names rather than from source.**
+The number the project has been quoting for HCP is **not** that. Three candidates
+exist and they disagree by more than an order of magnitude:
+
+| quantity | file | d=10 value | is it the `pairs` analogue? |
+|---|---|---:|---|
+| **`task_over_split`** | `mean_shift_v2.json` raw | **17.306** | **yes — same numerator and denominator roles** |
+| `task_over_encode` | `mean_shift_v2.json` raw | 0.6918 | no — denominator is a run-nuisance null |
+| `mean_ratio` | `mean_shift_LR.json` (v1 script) | 0.7484 | no — `between/within`, the `vs_ctrl` form |
+
+**Why the HCP pipeline deliberately does not use `task_over_split`.** Its own
+docstring (lines 8–11) states: raw BOLD carries arbitrary per-run baseline and
+gain, so task-vs-task differences include run nuisance; LR-vs-RL of the same task
+contains that nuisance and no condition effect; if `task/encode ≈ 1` the apparent
+condition effect is acquisition, not cognition. Measured `encode_over_split` =
+25.0175362270292 — the acquisition nuisance is 25× the estimation noise, which
+is why `split` is an inadequate null for fMRI.
+
+**Comparability verdict: the two quantities are not comparable, in either
+direction.**
+
+- Computed the CausalBench way (`task_over_split`), HCP scores **17.3** and would
+  be classified highly workable.
+- Computed the HCP way, CausalBench has no `encode`-equivalent null. `03_screen.py`
+  builds no "same perturbation, different batch" comparison — batch identity
+  (`gem_group`) exists in the raw `.h5ad` but the screen never reads it.
+
+So HCP's apparent failure and CausalBench's apparent success rest on
+**structurally different denominators**, and neither dataset has a value of the
+other's metric. Placing them on one axis is not supportable without either
+(a) adding a batch-matched null to `03_screen.py`, or (b) reporting HCP's
+`task_over_split` and accepting that it passes.
+
+Other HCP facts:
+
+- `mean_shift_v2.py` fits its PCA basis on **all runs pooled** (line 46–47), not
+  on controls — HCP has no control condition, so there is no `ref_pool` and no
+  step-0 gate can exist.
+- Design: 7 tasks × 2 encodings × 92 (LR) / 93 (RL) subjects, 176 frames, split
+  at 88.
+- `max_dims = 6` throughout: the spectrum is built from 7 group task means,
+  mean-centred (line 65), leaving rank 6.
 
 ---
 
@@ -303,16 +344,54 @@ without the DAG**.
 The median is over **all** recorded genes including those below NMIN. The median
 over the 385 / 146 that clear NMIN is a different number, stored nowhere.
 
-### 7.2 Cells, features, control cells, batches ⏳ PENDING
+### 7.2 Raw-data descriptors ✅ VERIFIED
 
-Not in any results file. `scripts/61_collect_descriptors.py` emits them.
+From `scripts/61_collect_descriptors.py` (`paper/descriptors.json`).
 
-Established and traceable:
-- **Norman 2019**: CPA-preprocessed, log-normalised despite the `_raw` filename;
-  5000 HVGs; **0 of 105 targets appear among the feature columns**
-  (`norman.json $.target_column_drop_is_noop = true`) ✅.
-- **CausalBench** is CRISPR interference; **Norman** is CRISPR activation.
-- Batch identity (`gem_group`) exists only in the raw `.h5ad`.
+| quantity | K562 | RPE1 | Norman 2019 |
+|---|---:|---:|---:|
+| cells, raw | 310385 | 247914 | 108497 |
+| cells excluded | 70237 | 108089 | — |
+| **cells analysed** | **240148** | **139825** | 108497 |
+| **features** | **1158** | **651** | **5000** |
+| **control cells** | **10691** | **11485** | **8907** |
+| perturbed cells | 229457 | 128340 | 57831 single + 41759 double |
+| **unique perturbations** | **1158** | **651** | **105** (single) |
+| clearing NMIN=200 | **385** | **146** | **101** |
+| clearing NMIN=100 | 1158 | 651 | 105 |
+| cells/pert min | 101 | 101 | 113 |
+| cells/pert p10 | 111.0 | 107.0 | — |
+| cells/pert median | 165.0 | 146.0 | 495.0 |
+| cells/pert p90 | 326.0 | 277.0 | — |
+| cells/pert max | 1996 | 3580 | 1960 |
+| value min / max | 0.0 / 6.644 | 0.0 / 6.700 | 0 – 8.5 |
+| fraction exactly zero | 0.4109 | 0.5038 | 0.914 |
+| integer-valued? | **No** | **No** | No |
+| **targets among features** | **1158 / 1158** | **651 / 651** | **0 / 105** |
+
+Preprocessing: none of the three matrices is integer-valued and all have
+bounded positive ranges — **all three are log-normalised**, including Norman
+despite its `_raw` filename.
+
+**The target-column asymmetry is total, not partial.** Every CausalBench target
+is one of the observed features (1158/1158, 651/651); no Norman target is
+(0/105). The "zero the targeted gene's row" step in `project()` therefore fires
+for every CausalBench environment and never for Norman
+(`norman.json $.target_column_drop_is_noop = true` ✅).
+
+`causalbench_k562.h5ad` — the file `cb_data.py` actually reads — has 240148
+cells, 1158 features, 10691 empty-string control cells, and 1159 unique
+`guide_ids` (1158 genes + the empty string) ✅ consistent with the `.npz`.
+
+**Batch identity is available for Norman but not for CausalBench.** Norman's
+`obs` carries `gemgroup` and `batch`; `causalbench_k562.h5ad` carries only
+`guide_ids`. No batch variable is used by `03_screen.py` for any dataset.
+
+CausalBench is CRISPR interference; Norman is CRISPR activation.
+
+HCP design (from `mean_shift_v2.py` and its JSON): 7 tasks
+(WM, GAMBLING, MOTOR, LANGUAGE, SOCIAL, RELATIONAL, EMOTION) × 2 encodings ×
+92 (LR) / 93 (RL) subjects, 176 frames per run.
 
 ---
 
@@ -335,7 +414,22 @@ Our hyperparameters (argparse defaults): `zdim=15`, `epochs=100`, `batch=128`,
 `lr=1e-3`, `mxAlpha=10.0`, `mxBeta=2.0`, `mxTemp=5.0`, `MMD_sigma=1000.0`,
 `kernel_num=10`, `lmbda=1e-3`.
 
-⏳ Their corresponding defaults still to be printed by `scripts/61`.
+Their signatures, read from their tree ✅:
+
+    src/train.py  loss_function(y_hat, y, x_recon, x, mu, var, G,
+                                MMD_sigma, kernel_num, matched_IO=False)
+    src/model.py  CMVAE.dag(z, bc, csz, bc2, csz2, num_interv=1)
+                  torch.inverse(torch.eye(self.z_dim) ...)
+
+Both match how we call them ✅. `cb_train.py` and `27_no_causal_ablation.py` each
+call `loss_function(...)` exactly once and neither redefines it ✅. Our
+`CMVAE_CB_NoDAG.dag` override reproduces their signature exactly ✅.
+
+⚠️ **Their argparse defaults could not be extracted** — `scripts/61` found no
+`add_argument(... default=...)` matches in `src/train.py`. Our defaults therefore
+remain unconfirmed against theirs. Whether `MMD_sigma=1000.0` / `kernel_num=10`
+match the values Zhang et al. used is **still open**; those two were taken from
+their `MMD_loss` call site, not from a defaults block.
 
 ---
 
@@ -365,17 +459,57 @@ independently found unusable (negative zero-shot noise ceiling). Resolving this
 is prerequisite to any statement about how many datasets the screen has
 correctly classified.
 
-### D12 — The README "effective dim" column contains three different metrics (HIGH)
+### D14 — HCP's true `pairs` analogue is 17.3, not 0.75 (CRITICAL)
+
+The quantity structurally equivalent to `mean_ratio_pairs` is
+`mean_shift_v2.json` `task_over_split` = **17.306187786068094** (raw, d=10). Every
+HCP number the project has quoted — 1.00 in the README, 0.7484 from
+`mean_shift_LR.json`, 0.6918 from `task_over_encode` — uses a **different
+denominator**.
+
+HCP's pipeline uses `encode` (same task, different acquisition run) as its null
+rather than `split`, because `encode_over_split` = **25.0175362270292**: run-level
+acquisition nuisance is 25× estimation noise in raw BOLD. That is a defensible
+choice **for fMRI**, and it is why `task_over_encode` ≈ 0.69 rather than 17.3.
+
+But `03_screen.py` has no `encode`-equivalent. It never compares the same
+perturbation across batches; `gem_group` is present in the raw `.h5ad` and unused.
+So the CausalBench ratio contains no acquisition-nuisance correction at all.
+
+**The HCP-vs-CausalBench comparison is therefore between a nuisance-corrected
+ratio and an uncorrected one.** Under matched construction HCP passes (17.3); under
+its own construction it fails (0.69). Which is reported determines whether HCP is
+the screen's negative control. See §1.4.
+
+### D12 — The README "effective dim" column mixes two metrics (HIGH) — CORRECTED
+
+**An earlier draft of this document claimed HCP's `3` was `n_dims_above_noise`.
+That was wrong.** With `mean_shift_v2.json` now read, `3` is
+`$.results.raw["10"].dims_above_2x` — the **same 2× threshold** as the other
+datasets. The HCP entry is consistent; the Norman entry is not.
 
 | README cell | value | what it actually is | that dataset's `dims_above_2x` |
 |---|---:|---|---:|
-| CausalBench `~15` | 15 | `n_dims_above_2x` at d=50 | 15 ✅ |
+| CausalBench `~15` | 15 | `n_dims_above_2x` at d=50 ✅ | 15 |
 | Norman `13.2` | 13.226 | **`participation_ratio`** at d=50 | **39** |
-| HCP `3` | 3 | **`n_dims_above_noise`** (1× threshold) | **0** |
+| HCP `3` | 3 | `dims_above_2x`, v2 raw, d=10 ✅ | 3 |
 
-Three rows, three quantities, one column header. Under a single consistent
-metric the column reads either 15 / 39 / 0 (`dims_above_2x`) or
-11.93 / 13.23 / 4.74 (`participation_ratio`) — and the two orderings differ.
+So the column mixes **two** metrics, not three: Norman is the odd one out. Under
+`dims_above_2x` throughout the column reads 15 / 39 / 3; under
+`participation_ratio` it reads 11.93 / 13.23 / 4.74. The two orderings differ.
+
+### D15 — HCP's two scripts disagree on `dims_above_2x` (MEDIUM)
+
+| file | script | `dims_above_2x` at d=10 |
+|---|---|---:|
+| `mean_shift_v2.json` (raw) | `mean_shift_v2.py` | **3** |
+| `mean_shift_LR.json` | `mean_shift.py` (v1) | **0** |
+| `mean_shift_RL.json` | `mean_shift.py` (v1) | 1 |
+
+Both are internally consistent ✅ (each recomputes from its own `sing_ratio`), but
+they build different null matrices: v2 uses the LR−RL difference of group task
+means (lines 66–67, scaled by 1/√2), v1 uses something else. **The paper must
+state which HCP script it reports.**
 
 ### D4 — Model and baselines are scored against different targets (HIGH)
 
@@ -415,20 +549,24 @@ primary.
 `mean_ratio_pairs`. **Still unfixed**; the script is deliberately left
 uncommitted for this reason.
 
-### D5 — HCP has no value of the primary metric (HIGH)
+### D5 — HCP has no step-0 gate and cannot have one (HIGH)
 
-HCP's ratio comes from `hcp/scripts/mean_shift_v2.py`. Its JSONs have
-`mean_ratio`, `within_median`, `between_median` and **no `mean_ratio_pairs`, no
-step-0 gate**. `mean_ratio == between/within` ✅ — structurally the `vs_ctrl`
-form. Placing HCP on a `mean_ratio_pairs` axis compares different quantities.
-Additionally HCP's spectrum has only 6 entries at every d (`max_possible_dims=6`),
-so its "out of d" denominator differs from the other datasets.
+`mean_shift_v2.py` fits its PCA basis on all runs pooled (lines 46–47). HCP has
+no control condition, so there is no `ref_pool`, no control pseudo-environments,
+and **no step-0 gate can be constructed**. The gate that calibrates the primary
+metric to 1.0 for K562, RPE1 and Norman does not exist for HCP, so HCP's ratio
+is uncalibrated in the sense the other three are calibrated.
 
-### D6 — README HCP value 1.00 contradicted (MEDIUM) — CONFIRMED
+HCP's spectrum also has only 6 entries at every d (7 group task means,
+mean-centred → rank 6), so "dims above 2× out of d" has a different denominator
+than the CausalBench datasets, where the spectrum has length d.
 
-`README.md` states **1.00**. Measured: **0.7484** (LR, d=10) and **0.7950**
-(RL, d=10); every HCP value at every d is below 1.0. No results file contains
-1.00.
+### D6 — README HCP value 1.00 is not traceable to any file (MEDIUM)
+
+`README.md` states **1.00**. No HCP results file contains it. The three
+candidates are 17.306 (`task_over_split`), 0.6918 (`task_over_encode`) and
+0.7484 (v1 `mean_ratio`). 1.00 appears to be a rounding of ~0.75 up to the null,
+or a placeholder. See D14.
 
 ### D9 — README K562 range is a sweep over analysis choices (MEDIUM) — RESOLVED
 
@@ -455,12 +593,20 @@ number but the column it sits in — see D12.
 
 ### Open items
 
-1. **§1.4** — line-by-line comparison of `hcp/scripts/mean_shift_v2.py` against
-   `03_screen.py`. Requires `scripts/61`. This is the only section resting on
-   inference from key names.
-2. **§7.2** — cells, features, control cells, batches. Requires `scripts/61`.
-3. **§8** — third-party argparse defaults, to confirm ours match where not
-   deliberately changed. Requires `scripts/61`.
+1. **§8** — Zhang et al.'s hyperparameter defaults. `scripts/61` found no
+   `add_argument(... default=...)` block in their `src/train.py`, so our
+   `MMD_sigma=1000.0` and `kernel_num=10` remain unconfirmed against theirs.
+   Resolving this needs a manual read of their training entry point.
+2. **D14 / §1.4** — decide which HCP quantity the paper reports. This is a
+   methodological choice, not a lookup: `task_over_split` (matched construction,
+   HCP passes at 17.3) versus `task_over_encode` (nuisance-corrected, HCP fails
+   at 0.69). Both are defensible; they cannot both be reported as "the HCP
+   mean-shift ratio".
+3. **D13** — decide whether RPE1 is a negative under the primary metric. Same
+   character: a metric choice with a classification consequence.
+
+Items 2 and 3 are the only two places where the evidence does not determine the
+answer. Everything else in this document is now a traced, recomputed value.
 
 ### Where `mean_ratio_vs_ctrl` is still in use
 
