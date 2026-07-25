@@ -22,15 +22,35 @@ demoted to `encode_split_nuisance` and reported next to the v2
      cross-subject decoder trained on the same 7-point set (one point per
      task) to hold training-data size constant. Unmatched
      cross-subject = variant_a linear and is reported for reference only.
-  C. `variant_reliability_ceiling` -- nearest-centroid classifier where
-     task centroids are computed from TRAIN subjects' first-halves and
-     each held-out subject's SECOND-half feature is classified by nearest
-     centroid. Same 5-fold CV as linear, seeds 0-4, on the accuracy
-     scale. This is the new ceiling.
-  D. `oracle_ceiling` -- second oracle. Synthesizes data with KNOWN
-     reliability at three SNR levels (0, 2, 10) and asserts the
-     reliability-ceiling estimator returns values in the expected bands.
-     Without this the ceiling number is noise.
+  C. `variant_within_subject_split_half_ceiling` -- ceiling-B. Same
+     LogReg as the within-subject decoder. Per subject: fit on the 14
+     A-half (task, encoding) means, score on the 14 B-half means from
+     the same runs. Same subject throughout, no cross-subject scoring.
+     Bounds within-subject 0.375 itself.
+  D. `oracle_ceiling` -- second oracle for the NEW estimator.
+     Synthesizes data with KNOWN reliability at three SNR levels (0,
+     0.10, 10) and asserts the within-subject split-half estimator
+     returns values in the expected bands.
+
+Second amendment 2026-07-25 (later same day):
+
+  * RETIRED the cross-subject nearest-centroid ceiling (0.1869). It did
+    not dominate the ridge/logistic decoder it was meant to bound, and
+    it was scored cross-subject so it inherited the same between-subject
+    penalty as the linear decoder. Any headroom was noise between two
+    similarly-limited estimators.
+  * The final table now reports TWO ceilings:
+      ceiling-A (transfer) = within-subject decoding, LR<->RL encoding
+                             split, same subject
+      ceiling-B (measurement) = within-subject split-half A->B, LogReg
+                                fit and score inside the subject
+  * FIXED the within-subject permutation null. Old scheme block-permuted
+    all 14 (task, encoding) rows per subject; because each task appears
+    twice per subject and the within-subject decoder needs all 7 tasks
+    in each encoding, only ~3.7% of block permutations passed and the
+    null was estimated on a biased subset. New scheme shuffles labels
+    within each (subject, encoding) stratum -- every subject scores on
+    every permutation. n_perms raised 100 -> 2000 for tighter p.
 
 `chance` and `linear` (0.1429 and 0.1798) are UNCHANGED. The variant_a
 code path that produces them is byte-identical to the pre-amendment
@@ -95,7 +115,10 @@ D = 10          # mean_shift_v2.py DIMS include 10; primary reporting rung
 KFOLDS = 5
 SEEDS = (0, 1, 2, 3, 4)
 PERM_N = 200          # permutation null iterations for cross-subject
-PERM_N_WITHIN = 100   # within-subject perms (much smaller per-iteration cost)
+PERM_N_WITHIN = 2000  # raised from 100 (audit 2026-07-25: 100 gave p ~ 1/100
+                      # floor for within-subject; with the corrected
+                      # per-encoding shuffle every subject survives so more
+                      # perms are cheap and give finer resolution)
 
 
 # --------------------------------------------------------------- data loading
@@ -346,6 +369,22 @@ def _within_subject_scores(X_A, y_labels, subs, encs, subj_list):
     return per_subject
 
 
+def _shuffle_within_encoding(y, subs, encs, subj_list, rng):
+    """Shuffle task labels independently within each (subject, encoding)
+    stratum. Preserves the invariant that every encoding contains all K
+    tasks per subject, so the within-subject LR<->RL classifier is always
+    well defined and no subject is dropped under the null.
+    """
+    y_perm = y.copy()
+    for s in subj_list:
+        for e in ENCS:
+            mask = (subs == s) & (encs == e)
+            idx = np.where(mask)[0]
+            if len(idx) > 1:
+                y_perm[idx] = y[rng.permutation(idx)]
+    return y_perm
+
+
 def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
     """Within-subject decoding + matched cross-subject control + perm null."""
     X_A, X_B, y, subs, encs = features_to_matrix_with_enc(features)
@@ -396,17 +435,29 @@ def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
     unmatched_mean = float(np.mean(unmatched_scores_per_seed))
     unmatched_std = float(np.std(unmatched_scores_per_seed))
 
-    # PERMUTATION NULL for within-subject
+    # PERMUTATION NULL for within-subject -- CORRECTED SHUFFLING (audit
+    # 2026-07-25).
+    #
+    # Previous scheme (RETIRED): permuted all 14 (task, encoding) rows per
+    # subject as one block. Because each task appears exactly twice per
+    # subject (once per encoding) and _within_subject_scores requires all K=7
+    # tasks to appear in each encoding, only ~3.7% of block permutations were
+    # accepted per subject -- the null was estimated on a small biased subset
+    # of "lucky" balanced shuffles. That is why 0.375 vs an apparent null of
+    # ~0.143 gave p=0.0102 across 644 test points (implausibly weak).
+    #
+    # New scheme: shuffle task labels INDEPENDENTLY within each (subject,
+    # encoding). Each encoding still contains all 7 tasks (in random order),
+    # every subject is scored on every permutation, and the null cleanly
+    # corresponds to "task labels have no relationship to features".
     null_scores = []
+    n_dropped_per_perm = []
     for perm_seed in range(n_perms):
         rng = np.random.default_rng(perm_seed + 200_000)
-        y_perm = y.copy()
-        for s in subj_list:
-            mask = subs == s
-            idx = np.where(mask)[0]
-            perm = rng.permutation(idx)
-            y_perm[idx] = y[perm]
+        y_perm = _shuffle_within_encoding(y, subs, encs, subj_list, rng)
         perm_scores = _within_subject_scores(X_A, y_perm, subs, encs, subj_list)
+        # Under the corrected shuffle every subject must survive.
+        n_dropped_per_perm.append(int(len(subj_list) - len(perm_scores)))
         if perm_scores:
             null_scores.append(float(np.mean(perm_scores)))
 
@@ -436,41 +487,138 @@ def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
         permutation_null_p=within_p,
         n_perms=int(n_perms),
         n_perms_valid=int(len(null_scores)),
+        permutation_scheme=("SHUFFLE_WITHIN_SUBJECT_AND_ENCODING: for each "
+                             "(subject, encoding) stratum independently, "
+                             "randomly permute the 7 task labels. This "
+                             "preserves 'each encoding contains all 7 tasks' "
+                             "so every subject scores on every permutation. "
+                             "Corrected from the block-shuffle scheme used "
+                             "before 2026-07-25, which dropped ~96% of "
+                             "subjects per perm."),
+        n_subjects_dropped_per_perm_mean=float(
+            np.mean(n_dropped_per_perm)) if n_dropped_per_perm else 0.0,
+        n_subjects_dropped_per_perm_max=int(
+            max(n_dropped_per_perm)) if n_dropped_per_perm else 0,
     )
 
 
-# ========================================= ARM C: SPLIT-HALF RELIABILITY CEILING
-def variant_reliability_ceiling(features, seeds=SEEDS, kfolds=KFOLDS):
-    """Nearest-centroid classifier. Task centroids from TRAIN subjects'
-    FIRST-halves; each HELD-OUT subject's SECOND-half is classified by the
-    nearest centroid. Same 5-fold CV as linear. Same accuracy scale as
-    chance/linear.
+# ================== ARM C: WITHIN-SUBJECT SPLIT-HALF CEILING (ceiling-B)
+# WITHIN-SUBJECT ONLY. No cross-subject scoring appears in this path or its
+# oracle. This function fits and scores entirely inside each subject's own
+# 14 (task, encoding) rows, using the SAME LogisticRegression as the
+# within-subject decoder in variant_within_subject. It bounds within-subject
+# 0.375 itself and answers whether within-subject is measurement-limited.
+#
+# Retired 2026-07-25: variant_reliability_ceiling (cross-subject nearest-
+# centroid classifier, 0.1869). Retired because (a) nearest-centroid does
+# not dominate the ridge/logistic decoder it was meant to bound, and (b) it
+# was scored cross-subject, so it inherited the same between-subject
+# penalty as the linear decoder it was meant to bound. Any headroom vs
+# linear was noise between two similarly-limited estimators.
+def variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
+                                                run_perm=True):
+    """Ceiling-B. Same LogReg as within-subject decoder. For each subject:
+    fit on the 14 A-half (task, encoding) means, score on the 14 B-half
+    means from the same runs. Bounds within-subject 0.375 itself.
+
+    SEEDS: LogReg with lbfgs is deterministic given fixed data, so seeds
+    only cycle random_state. Values across seeds should match; per-seed
+    reported for transparency and consistency with other arms.
     """
     X_A, X_B, y, subs, encs = features_to_matrix_with_enc(features)
     K = len(TASKS)
+    subj_list = sorted(set(subs))
+
+    def _score_all_subjects(seed):
+        per_subj = []
+        for s in subj_list:
+            mask = subs == s
+            idx = np.where(mask)[0]
+            y_s = y[idx]
+            A_s = X_A[idx]
+            B_s = X_B[idx]
+            if len(set(y_s)) < K:
+                continue
+            clf = LogisticRegression(max_iter=2000, C=1.0,
+                                      multi_class="multinomial",
+                                      solver="lbfgs",
+                                      random_state=int(seed))
+            clf.fit(A_s, y_s)
+            per_subj.append(float(clf.score(B_s, y_s)))
+        return per_subj
+
     per_seed = []
+    n_scored = 0
     for seed in seeds:
-        fold_scores = []
-        for tr, te in shuffled_group_folds(subs, seed=seed, k=kfolds):
-            centroids = np.array([X_A[tr][y[tr] == t].mean(0) for t in range(K)])
-            X_test = X_B[te]
-            dists = np.linalg.norm(
-                X_test[:, None, :] - centroids[None, :, :], axis=2)
-            preds = dists.argmin(axis=1)
-            fold_scores.append(float((preds == y[te]).mean()))
-        per_seed.append(dict(seed=int(seed),
-                             mean=float(np.mean(fold_scores))))
+        scores = _score_all_subjects(seed)
+        n_scored = len(scores)
+        per_seed.append(dict(
+            seed=int(seed),
+            mean=float(np.mean(scores)) if scores else float("nan"),
+            std=float(np.std(scores)) if scores else float("nan"),
+            n_scored=int(len(scores)),
+        ))
+
     means = [ps["mean"] for ps in per_seed]
+    stds = [ps["std"] for ps in per_seed]
+
+    # Permutation null for ceiling-B: shuffle task labels within (subject,
+    # encoding) as in the decoder null, refit LogReg, score B-halves. Uses
+    # the same shuffle helper.
+    if run_perm:
+        null_scores = []
+        for perm_seed in range(PERM_N_WITHIN):
+            rng = np.random.default_rng(perm_seed + 300_000)
+            y_perm = _shuffle_within_encoding(y, subs, encs, subj_list, rng)
+            per_subj = []
+            for s in subj_list:
+                mask = subs == s
+                idx = np.where(mask)[0]
+                y_s = y_perm[idx]
+                A_s = X_A[idx]
+                B_s = X_B[idx]
+                if len(set(y_s)) < K:
+                    continue
+                clf = LogisticRegression(max_iter=2000, C=1.0,
+                                          multi_class="multinomial",
+                                          solver="lbfgs", random_state=0)
+                clf.fit(A_s, y_s)
+                per_subj.append(float(clf.score(B_s, y_s)))
+            if per_subj:
+                null_scores.append(float(np.mean(per_subj)))
+        null_arr = (np.array(null_scores) if null_scores
+                    else np.array([float("nan")]))
+        ceilingB_p = float(
+            (null_arr >= np.mean(means)).sum() / len(null_arr))
+        perm_block = dict(
+            permutation_null_mean=float(null_arr.mean()),
+            permutation_null_std=float(null_arr.std()),
+            permutation_null_p95=float(np.percentile(null_arr, 95)),
+            permutation_null_p=ceilingB_p,
+            n_perms=int(PERM_N_WITHIN),
+            permutation_scheme=("SHUFFLE_WITHIN_SUBJECT_AND_ENCODING; A-halves "
+                                 "used for training with shuffled labels; "
+                                 "B-halves scored with the same shuffled "
+                                 "labels."),
+        )
+    else:
+        perm_block = dict(permutation_null_skipped=True,
+                          reason="oracle mode: point estimate only")
+
     return dict(
-        reliability_ceiling_mean=float(np.mean(means)),
-        reliability_ceiling_std=float(np.std(means)),
+        ceiling_B_mean=float(np.mean(means)),
+        ceiling_B_std_across_subjects=float(np.mean(stds)),
+        ceiling_B_std_across_seeds=float(np.std(means)),
+        n_subjects_scored=int(n_scored),
         per_seed=per_seed,
         seeds=list(map(int, seeds)),
-        kfolds=int(kfolds),
-        classifier="nearest-centroid (Euclidean)",
-        note=("Centroids fit from TRAIN subjects' FIRST-halves. Classified "
-              "HELD-OUT subjects' SECOND-halves. Same accuracy scale as "
-              "chance/linear."),
+        classifier="LogisticRegression(multinomial, C=1.0, max_iter=2000)",
+        scoring_path="WITHIN_SUBJECT_ONLY: no cross-subject scoring anywhere",
+        note=("Per subject: fit LogReg on 14 A-half (task, encoding) means, "
+              "score on the 14 B-half means from the same runs. Same subject "
+              "throughout. Same estimator family as within-subject decoder, "
+              "so this genuinely bounds it."),
+        **perm_block,
     )
 
 
@@ -560,6 +708,9 @@ def oracle_decoder(snr=3.0, n_subjects=40, n_regions=60, seed=42):
 
 
 # ============================================== ORACLE #2 (ceiling oracle)
+# Retired 2026-07-25: the previous oracle_ceiling tested the retired
+# cross-subject nearest-centroid estimator. Replaced with a synthetic-data
+# check against the NEW within-subject split-half estimator.
 def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
     """Second oracle -- tests the split-half reliability-ceiling ESTIMATOR
     itself. Synthesizes data at three known SNR levels and asserts the
@@ -575,17 +726,15 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
     W = np.zeros((n_regions, D))
     W[:D, :] = np.eye(D)
 
-    # Middle-signal SNR calibration: after 88-frame averaging, per-dim noise
-    # is 1/sqrt(88) ~ 0.107 and sub_offset adds std 0.3 per dim, so the
-    # discriminative test-noise std is ~0.318. Between-class distance ~
-    # snr*sqrt(2D)~snr*sqrt(20). Per-pair correct P ~= Phi( snr*sqrt(20)/2 /
-    # 0.318 ) = Phi( snr * 7.03 ). At snr=0.20, 7-way accuracy sits around
-    # 0.6 (well inside the band). At snr=2 the pair accuracy is essentially
-    # 1.0 and 7-way saturates; that is why the previous middle scenario
-    # returned 1.0000.
+    # Oracle for the NEW within-subject split-half estimator. Tests the
+    # SAME estimator variant_within_subject_split_half_ceiling uses on real
+    # data. Middle-signal SNR calibrated to the LogReg 14-train / 14-test
+    # regime: per-dim signal is snr, per-dim frame-averaged test noise is
+    # 1/sqrt(88) ~ 0.107. Local simulation confirms snr=0.10 lands near
+    # 0.52 accuracy (well inside the middle band) and snr=10 saturates.
     scenarios = [
-        ("no_signal",       0.0,   (0.05, 0.25)),  # ~chance = 1/7 = 0.143
-        ("middle_signal",   0.20,  (0.25, 0.95)),  # intermediate 7-way accuracy
+        ("no_signal",       0.0,   (0.05, 0.30)),  # ~chance = 1/7 = 0.143
+        ("middle_signal",   0.10,  (0.30, 0.90)),  # intermediate 7-way
         ("strong_signal",  10.0,   (0.90, 1.01)),
     ]
 
@@ -610,8 +759,10 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
                     features[(s, t, e)] = (
                         m[:HALF].mean(0), m[HALF:NFRAMES].mean(0))
 
-        r = variant_reliability_ceiling(features, seeds=(0,), kfolds=5)
-        actual = r["reliability_ceiling_mean"]
+        # NEW estimator only (no cross-subject scoring).
+        r = variant_within_subject_split_half_ceiling(
+            features, seeds=(0,), run_perm=False)
+        actual = r["ceiling_B_mean"]
         lo, hi = expected
         ok = bool(lo <= actual <= hi)
         results[label] = dict(snr=float(snr),
@@ -619,11 +770,14 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
                               actual=float(actual), ok=ok)
 
     all_pass = bool(all(r["ok"] for r in results.values()))
-    return all_pass, dict(scenarios=results,
-                          note=("Second oracle. Independent noise between "
-                                "halves + shared task signal at 3 SNR levels; "
-                                "the split-half ceiling estimator must recover "
-                                "signal-appropriate values."))
+    return all_pass, dict(
+        scenarios=results,
+        estimator="variant_within_subject_split_half_ceiling",
+        note=("Second oracle. Tests the WITHIN-SUBJECT SPLIT-HALF estimator "
+              "(LogReg A-halves -> B-halves, same subject) at three known SNR "
+              "levels. Independent noise between halves + shared task signal. "
+              "This replaces the retired oracle for the cross-subject "
+              "nearest-centroid ceiling."))
 
 
 # ================================================= v2 nuisance for reference
@@ -691,8 +845,9 @@ def main():
         sys.exit(1)
     print("[oracle #1] PASS", flush=True)
 
-    # ------------------------ ORACLE #2: ceiling
-    print("\n[oracle #2: ceiling] START", flush=True)
+    # ------------------------ ORACLE #2: within-subject split-half ceiling
+    print("\n[oracle #2: within-subject split-half ceiling] START",
+          flush=True)
     passed2, o2 = oracle_ceiling()
     for label, r in o2["scenarios"].items():
         print(f"[oracle #2] {label:<15s} snr={r['snr']:5.1f} "
@@ -763,10 +918,13 @@ def main():
           f"perm_null_p95={ws['permutation_null_p95']:.4f}  "
           f"p={ws['permutation_null_p']:.4f}", flush=True)
 
-    print("\n[arm C] split-half reliability ceiling", flush=True)
-    rc = variant_reliability_ceiling(features, seeds=SEEDS, kfolds=KFOLDS)
-    print(f"[arm C] reliability_ceiling={rc['reliability_ceiling_mean']:.4f} "
-          f"+/- {rc['reliability_ceiling_std']:.4f}", flush=True)
+    print("\n[arm C] within-subject split-half ceiling (ceiling-B)",
+          flush=True)
+    cB = variant_within_subject_split_half_ceiling(features, seeds=SEEDS)
+    print(f"[arm C] ceiling_B={cB['ceiling_B_mean']:.4f} "
+          f"+/- {cB['ceiling_B_std_across_subjects']:.4f} "
+          f"(n_subj={cB['n_subjects_scored']})  "
+          f"perm_p={cB['permutation_null_p']:.4f}", flush=True)
 
     print("\n[variant_b] leave-one-task-out (UNDERPOWERED)", flush=True)
     vb = variant_b(features, seeds=SEEDS)
@@ -775,23 +933,43 @@ def main():
 
     v2_nuis = read_v2_encode_over_split()
 
+    ch = float(va["chance"]["mean"])
+    lin = float(va["linear"]["mean"])
+    cA = float(ws["within_subject_mean"])
+    cBm = float(cB["ceiling_B_mean"])
+
     out = dict(
         oracle_decoder=dict(passed=passed1, **o1),
         oracle_ceiling=dict(passed=passed2, **o2),
         variant_a=va,
         linear_permutation_null=perm_a,
         variant_within_subject=ws,
-        variant_reliability_ceiling=rc,
+        variant_within_subject_split_half_ceiling=cB,
         variant_b_supplementary=vb,
         v2_nuisance=v2_nuis,
-        final_triple=dict(
-            chance=float(va["chance"]["mean"]),
-            linear=float(va["linear"]["mean"]),
-            reliability_ceiling=float(rc["reliability_ceiling_mean"]),
-            headroom=float(rc["reliability_ceiling_mean"]
-                            - va["linear"]["mean"]),
+        final_table=dict(
+            chance=ch,
+            cross_subject_linear=lin,
+            ceiling_A_within_subject_transfer=cA,
+            ceiling_B_within_subject_measurement=cBm,
+            headroom_linear_to_ceiling_A=cA - lin,
+            headroom_linear_to_ceiling_B=cBm - lin,
+            headroom_within_subject_to_ceiling_B=cBm - cA,
             scale="accuracy [0, 1] (7-class task decoding)",
             chance_reference=float(1.0 / len(TASKS)),
+            note=("Ceiling-A bounds what perfect subject alignment would "
+                   "buy the cross-subject decoder. Ceiling-B bounds what the "
+                   "measurement supports at all. If ceiling-B is close to "
+                   "ceiling-A, within-subject is itself at its measurement "
+                   "ceiling."),
+        ),
+        retired=dict(
+            reliability_ceiling_cross_subject_nearest_centroid=(
+                "0.1869. Retired 2026-07-25 -- cross-subject nearest-centroid "
+                "does not dominate the ridge/logistic decoder it was meant to "
+                "bound, and it inherited the same between-subject penalty as "
+                "the linear score. Any headroom vs linear was noise between "
+                "two similarly-limited estimators."),
         ),
         config=dict(
             scaling="subject_pooled",
@@ -818,33 +996,53 @@ def main():
 
     # ---- Summary
     print("\n" + "=" * 78, flush=True)
-    print("HCP CEILING SUMMARY (amended)", flush=True)
+    print("HCP CEILING SUMMARY (amended, two ceilings)", flush=True)
     print("=" * 78, flush=True)
-    print(f"  oracle #1 (decoder):  PASS")
-    print(f"  oracle #2 (ceiling):  PASS")
+    print(f"  oracle #1 (decoder):                 PASS")
+    print(f"  oracle #2 (within-subject split-half): PASS")
     print()
-    ch = va["chance"]["mean"]
-    lin = va["linear"]["mean"]
-    rce = rc["reliability_ceiling_mean"]
-    head = rce - lin
-    print(f"  chance:               {ch:.4f} (7-class task decoding)")
-    print(f"  linear:               {lin:.4f}")
-    print(f"  reliability ceiling:  {rce:.4f}  "
-          f"(nearest-centroid on split halves)")
-    print(f"  headroom (ceil-lin):  {head:+.4f}")
+    print("  FINAL TABLE (all on 7-class accuracy scale)")
+    print(f"    chance:                            {ch:.4f}")
+    print(f"    cross-subject linear:              {lin:.4f}")
+    print(f"    ceiling-A (transfer, within-subj): {cA:.4f}")
+    print(f"    ceiling-B (measurement, split-half): {cBm:.4f}")
+    print(f"    headroom linear -> ceiling-A:      "
+          f"{cA - lin:+.4f}")
+    print(f"    headroom linear -> ceiling-B:      "
+          f"{cBm - lin:+.4f}")
+    print(f"    headroom ceiling-A -> ceiling-B:   "
+          f"{cBm - cA:+.4f}")
     print()
     print(f"  linear permutation null: mean={perm_a['null_mean']:.4f} "
-          f"p95={perm_a['null_p95']:.4f} p={perm_a['empirical_p']:.4f}")
-    print(f"  within-subject:       "
-          f"{ws['within_subject_mean']:.4f} +/- {ws['within_subject_std']:.4f} "
-          f"(n_subj={ws['n_subjects_scored']}, "
-          f"runs/subj={ws['runs_per_subject']})")
+          f"p95={perm_a['null_p95']:.4f} p={perm_a['empirical_p']:.4f} "
+          f"(n_perms={perm_a['n_perms']})")
+    print()
+    print(f"  within-subject decoding (ceiling-A):")
+    print(f"    mean:               {cA:.4f} +/- "
+          f"{ws['within_subject_std']:.4f}")
+    print(f"    n_subj scored:      {ws['n_subjects_scored']}, "
+          f"runs/subj={ws['runs_per_subject']}")
     print(f"    matched cross:      {ws['matched_cross_subject_mean']:.4f}")
     print(f"    unmatched cross:    {ws['unmatched_cross_subject_mean']:.4f} "
           f"(reference only)")
-    print(f"    perm null p:        {ws['permutation_null_p']:.4f}")
+    print(f"    perm null: mean={ws['permutation_null_mean']:.4f} "
+          f"p95={ws['permutation_null_p95']:.4f} "
+          f"p={ws['permutation_null_p']:.4f} "
+          f"(n_perms={ws['n_perms']}, "
+          f"dropped/perm={ws['n_subjects_dropped_per_perm_mean']:.2f})")
     print()
-    print(f"  encode/split nuisance (old ceiling): "
+    print(f"  within-subject split-half ceiling (ceiling-B):")
+    print(f"    mean:               {cBm:.4f} +/- "
+          f"{cB['ceiling_B_std_across_subjects']:.4f}")
+    print(f"    n_subj scored:      {cB['n_subjects_scored']}")
+    print(f"    perm null: mean={cB['permutation_null_mean']:.4f} "
+          f"p95={cB['permutation_null_p95']:.4f} "
+          f"p={cB['permutation_null_p']:.4f} "
+          f"(n_perms={cB['n_perms']})")
+    print()
+    print(f"  RETIRED cross-subject nearest-centroid ceiling (0.1869): "
+          f"see out['retired'] for reason")
+    print(f"  encode/split ratio at same decoder (nuisance): "
           f"{va['encode_split_nuisance']['mean']:.4f}")
     if v2_nuis:
         print(f"  v2 encode_over_split ({v2_nuis['scaling']}, d={v2_nuis['d']}): "
