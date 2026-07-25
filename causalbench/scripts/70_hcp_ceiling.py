@@ -1,45 +1,75 @@
 """Build the HCP task-decoding triple that parallels CausalBench
-(chance / linear / ceiling). Without this, HCP has only ratios and cannot share
-an axis with CausalBench's extraction ceiling (0.129 / 0.226 / 0.528).
+(chance / linear / reliability-ceiling). Without this, HCP has only ratios
+and cannot share an axis with CausalBench's extraction ceiling
+(0.129 / 0.226 / 0.528).
 
-Two variants:
+AMENDMENT 2026-07-25 -- the original ceiling arm was mis-specified.
+It fit LogReg on train-subject first-halves and scored on held-out
+second-halves. That measures within-run temporal repeatability under a
+cross-subject decoder, not an achievable upper bound on task classification.
+That is why the original 0.1794 landed BELOW linear 0.1798: both used the
+same decoder and both differ only in noise. The old ceiling arm is
+demoted to `encode_split_nuisance` and reported next to the v2
+`encode_over_split` nuisance ratio. The following are added.
+
+  A. `linear_permutation_null` -- shuffle task labels within subject,
+     refit the same LogReg 5-fold, >=200 permutations. Real linear must
+     clear the null p95.
+  B. `variant_within_subject` -- fit LogReg on one encoding (LR) and test
+     on the other (RL) within each subject; average across both
+     directions. Reports mean +/- SD across subjects and its own
+     permutation null. Also reports a MATCHED cross-subject control: the
+     cross-subject decoder trained on the same 7-point set (one point per
+     task) to hold training-data size constant. Unmatched
+     cross-subject = variant_a linear and is reported for reference only.
+  C. `variant_reliability_ceiling` -- nearest-centroid classifier where
+     task centroids are computed from TRAIN subjects' first-halves and
+     each held-out subject's SECOND-half feature is classified by nearest
+     centroid. Same 5-fold CV as linear, seeds 0-4, on the accuracy
+     scale. This is the new ceiling.
+  D. `oracle_ceiling` -- second oracle. Synthesizes data with KNOWN
+     reliability at three SNR levels (0, 2, 10) and asserts the
+     reliability-ceiling estimator returns values in the expected bands.
+     Without this the ceiling number is noise.
+
+`chance` and `linear` (0.1429 and 0.1798) are UNCHANGED. The variant_a
+code path that produces them is byte-identical to the pre-amendment
+script.
+
+Two variants remain:
 
 (a) HEADLINE -- held-out-subject task decoding.
-    Multinomial logistic regression predicts task (K=7) from the d-dim
-    projected first-half mean of each subject-encoding run.
-      chance  = held-out-fold majority-class baseline (~1/K if balanced)
-      linear  = decoder trained on train-subject first-halves,
-                tested on held-out-subject first-halves
-      ceiling = SAME decoder, tested on held-out-subject SECOND-halves
-                (same subject, same task, same encoding, different frames)
-                -- upper bound given the decoder cannot memorise a subject
+    chance  = held-out-fold majority-class baseline
+    linear  = decoder trained on train-subject first-halves, tested on
+              held-out first-halves
+    (old `ceiling` retained under variant_a for reproducibility; renamed
+    in the output JSON to `encode_split_nuisance` and NOT called ceiling)
 
-(b) SUPPLEMENTARY -- leave-one-task-out shift prediction. K=7 environments.
-    Reported UNDERPOWERED. Not to be treated as evidence of anything.
+(b) SUPPLEMENTARY -- leave-one-task-out shift prediction. UNDERPOWERED.
 
-Inputs and pipeline mirror `hcp/scripts/mean_shift_v2.py` exactly. Documented
-in `causalbench/PATHS_hcp.md`.
+Inputs and pipeline mirror `hcp/scripts/mean_shift_v2.py` exactly.
+Documented in `causalbench/PATHS_hcp.md`.
 
 Guarantees enforced in code:
-  - ORACLE: synthetic-data check where task identity is planted in a known
-    direction at fixed SNR. Fails-fast if the decoder does not recover it or
-    if chance does not sit at 1/K. If oracle fails, no science is reported.
-  - SAMPLE-SIZE MATCHING: LINEAR and CEILING both test on the same held-out
-    subjects' features, so their sample sizes are identical by construction.
-    An assert enforces this in every fold. CHANCE is measured against the same
-    held-out labels.
-  - MULTIPLE SEEDS: the decoder is fit and evaluated under 5 subject-shuffles;
-    per-seed values are reported alongside the mean.
+  - ORACLE #1 (decoder): synthetic-data check that the decoder recovers a
+    planted signal at SNR=3. Fails-fast.
+  - ORACLE #2 (ceiling): synthetic-data checks at SNR=0 / SNR=2 / SNR=10
+    that the split-half classifier returns values within predeclared
+    bands. Fails-fast.
+  - SAMPLE-SIZE MATCHING: within-subject vs cross-subject decoding is
+    reported both matched (=7 training points, one per task) and
+    unmatched. Unmatched alone is worthless.
+  - MULTIPLE SEEDS: seeds 0-4 wherever a subject split is random.
   - `--clean` removes the specific output JSON before running.
-  - Atomic write (.tmp + os.rename) so a partial file cannot masquerade as a
-    finished one.
+  - Atomic write.
 
 Usage (A100, cb venv):
     python causalbench/scripts/70_hcp_ceiling.py            # writes if absent
     python causalbench/scripts/70_hcp_ceiling.py --clean    # overwrite
+    python causalbench/scripts/70_hcp_ceiling.py --oracles-only
 
 Nohup for long runs:
-    nohup python causalbench/scripts/70_hcp_ceiling.py \\
+    nohup python causalbench/scripts/70_hcp_ceiling.py --clean \
         > logs/hcp_ceiling.log 2>&1 &
 """
 import argparse
@@ -52,6 +82,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 
 HCP_TS = Path("/workspace/meridian-identifiability/hcp/ts")
+V2_JSON = Path("/workspace/meridian-identifiability/hcp/results/mean_shift_v2.json")
 
 OUT_DIR = Path(__file__).resolve().parents[1] / "results/screen"
 OUT_JSON = OUT_DIR / "hcp_ceiling.json"
@@ -63,6 +94,8 @@ HALF = 88       # from mean_shift_v2.py:23
 D = 10          # mean_shift_v2.py DIMS include 10; primary reporting rung
 KFOLDS = 5
 SEEDS = (0, 1, 2, 3, 4)
+PERM_N = 200          # permutation null iterations for cross-subject
+PERM_N_WITHIN = 100   # within-subject perms (much smaller per-iteration cost)
 
 
 # --------------------------------------------------------------- data loading
@@ -84,11 +117,7 @@ def find_complete_subjects():
 
 
 def _subject_pooled_scale(runs):
-    """Per-subject-per-region z-score across all runs (mean_shift_v2.py:39-44).
-
-    `runs` is a dict {(task, enc): (176, n_regions)}. Returns the same dict
-    with each run z-scored.
-    """
+    """Per-subject-per-region z-score across all runs (mean_shift_v2.py:39-44)."""
     allr = np.concatenate([runs[k] for k in runs], axis=0)
     mu = allr.mean(0)
     sd = allr.std(0) + 1e-8
@@ -113,9 +142,6 @@ def fit_pca_basis(subjects, d):
 
 
 def build_projected_halves(subjects, W):
-    """For each (subject, task, encoding) return (A, B) = projected means of
-    the first and second halves. Shapes: A, B are (d,).
-    """
     features = {}
     for s in subjects:
         runs = {(t, e): load_run(s, t, e) for t in TASKS for e in ENCS}
@@ -128,12 +154,26 @@ def build_projected_halves(subjects, W):
 
 
 def features_to_matrix(features):
+    """Backwards compatible: returns (X_A, X_B, y, groups). Chance/linear
+    computation MUST use exactly this shape/order to match pre-amendment
+    numbers.
+    """
     keys = sorted(features.keys())
     X_A = np.array([features[k][0] for k in keys])
     X_B = np.array([features[k][1] for k in keys])
     y = np.array([TASKS.index(k[1]) for k in keys])
     groups = np.array([k[0] for k in keys])
     return X_A, X_B, y, groups
+
+
+def features_to_matrix_with_enc(features):
+    keys = sorted(features.keys())
+    X_A = np.array([features[k][0] for k in keys])
+    X_B = np.array([features[k][1] for k in keys])
+    y = np.array([TASKS.index(k[1]) for k in keys])
+    subjects = np.array([k[0] for k in keys])
+    encodings = np.array([k[2] for k in keys])
+    return X_A, X_B, y, subjects, encodings
 
 
 # ----------------------------------------------------------- shuffled folds
@@ -158,6 +198,10 @@ def shuffled_group_folds(groups, seed, k):
 
 # ==================================================================== VARIANT A
 def variant_a(features, seeds=SEEDS, kfolds=KFOLDS):
+    """Chance, linear, and the OLD ceiling (renamed encode_split_nuisance in
+    the output JSON). Code path is byte-identical to the pre-amendment
+    version so chance and linear reproduce numerically.
+    """
     X_A, X_B, y, groups = features_to_matrix(features)
     K = len(TASKS)
 
@@ -167,29 +211,24 @@ def variant_a(features, seeds=SEEDS, kfolds=KFOLDS):
         n_test_seen = []
         for tr, te in shuffled_group_folds(groups, seed, kfolds):
 
-            # SAMPLE-SIZE MATCHING (asserted every fold)
-            # LINEAR test = X_A[te]; CEILING test = X_B[te]; both use the same
-            # `te` indices, so n is identical by construction.
+            # SAMPLE-SIZE MATCHING for encode_split_nuisance (same held-out
+            # subjects; identical n by construction).
             n_linear_test = len(te)
             n_ceiling_test = len(te)
             assert n_linear_test == n_ceiling_test, (
                 f"sample sizes not matched: {n_linear_test} vs {n_ceiling_test}"
             )
 
-            # CHANCE: majority-class from train, evaluated on held-out labels
             _, counts = np.unique(y[tr], return_counts=True)
             maj = np.argmax(counts)
             chance = float((y[te] == maj).mean())
 
-            # LINEAR
             clf = LogisticRegression(max_iter=2000, C=1.0,
                                       multi_class="multinomial",
                                       solver="lbfgs", random_state=seed)
             clf.fit(X_A[tr], y[tr])
             linear = float(clf.score(X_A[te], y[te]))
-
-            # CEILING: same fitted classifier, second-halves of the same held-out
-            # subject-encoding-task tuples
+            # Old ceiling: same fitted decoder, second-halves of same subjects.
             ceiling = float(clf.score(X_B[te], y[te]))
 
             chance_scores.append(chance)
@@ -213,14 +252,225 @@ def variant_a(features, seeds=SEEDS, kfolds=KFOLDS):
     return dict(
         chance=agg("chance"),
         linear=agg("linear"),
-        ceiling=agg("ceiling"),
+        encode_split_nuisance=dict(
+            **agg("ceiling"),
+            note=("Was originally called 'ceiling'. LogReg from first-halves "
+                  "scored on second-halves of same held-out subjects. Measures "
+                  "within-run temporal repeatability under a cross-subject "
+                  "decoder. NOT a ceiling on achievable task classification."),
+        ),
         n_test_per_fold=per_seed[0]["per_fold_n_test"],
-        n_matched=("LINEAR and CEILING test on the same held-out subjects' "
-                   "first- and second-half features; identical n by construction."),
         seeds=list(map(int, seeds)),
         kfolds=int(kfolds),
         K_classes=int(K),
         classifier="LogisticRegression(multinomial, C=1.0, max_iter=2000)",
+    )
+
+
+# ================================================= ARM A: PERMUTATION NULL
+def variant_a_permutation_null(features, real_linear, n_perms=PERM_N,
+                                kfolds=KFOLDS, seed_base=0):
+    """Shuffle task labels WITHIN subject, refit variant_a's LogReg, 5-fold
+    per permutation. Report null distribution and empirical p for
+    `real_linear`.
+    """
+    X_A, X_B, y, groups = features_to_matrix(features)
+    subs = sorted(set(groups))
+
+    null_scores = []
+    for perm_seed in range(n_perms):
+        rng = np.random.default_rng(perm_seed + 100_000)
+        y_perm = y.copy()
+        for s in subs:
+            mask = groups == s
+            idx = np.where(mask)[0]
+            perm = rng.permutation(idx)
+            y_perm[idx] = y[perm]
+
+        fold_scores = []
+        for tr, te in shuffled_group_folds(groups, seed=seed_base, k=kfolds):
+            clf = LogisticRegression(max_iter=2000, C=1.0,
+                                      multi_class="multinomial",
+                                      solver="lbfgs", random_state=seed_base)
+            clf.fit(X_A[tr], y_perm[tr])
+            fold_scores.append(float(clf.score(X_A[te], y_perm[te])))
+        null_scores.append(float(np.mean(fold_scores)))
+
+    null_arr = np.array(null_scores)
+    p = float((null_arr >= real_linear).sum() / len(null_arr))
+    return dict(
+        n_perms=int(n_perms),
+        null_mean=float(null_arr.mean()),
+        null_std=float(null_arr.std()),
+        null_p95=float(np.percentile(null_arr, 95)),
+        real_linear=float(real_linear),
+        empirical_p=p,
+        real_clears_null_p95=bool(real_linear > np.percentile(null_arr, 95)),
+        note=("Task labels shuffled within subject; every subject keeps its "
+              "own 14-run structure but the task assignments are random. "
+              "Same 5-fold CV as variant_a linear; single split seed since "
+              "the split does not modulate the null."),
+    )
+
+
+# ============================================= ARM B: WITHIN-SUBJECT DECODING
+def _within_subject_scores(X_A, y_labels, subs, encs, subj_list):
+    """Per-subject LogReg with LR<->RL cross-encoding split. Both directions
+    averaged. Returns a list of per-subject accuracies (subjects where all 7
+    tasks are present in both encodings).
+    """
+    K = len(TASKS)
+    per_subject = []
+    for s in subj_list:
+        mask = subs == s
+        idx = np.where(mask)[0]
+        y_s = y_labels[idx]
+        A_s = X_A[idx]
+        enc_s = encs[idx]
+
+        lr_mask = enc_s == "LR"
+        rl_mask = enc_s == "RL"
+        if not (lr_mask.any() and rl_mask.any()):
+            continue
+        if len(set(y_s[lr_mask])) < K or len(set(y_s[rl_mask])) < K:
+            continue
+
+        direction_scores = []
+        for train_mask, test_mask in [(lr_mask, rl_mask), (rl_mask, lr_mask)]:
+            clf = LogisticRegression(max_iter=2000, C=1.0,
+                                      multi_class="multinomial",
+                                      solver="lbfgs", random_state=0)
+            clf.fit(A_s[train_mask], y_s[train_mask])
+            direction_scores.append(float(clf.score(A_s[test_mask], y_s[test_mask])))
+        per_subject.append(float(np.mean(direction_scores)))
+    return per_subject
+
+
+def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
+    """Within-subject decoding + matched cross-subject control + perm null."""
+    X_A, X_B, y, subs, encs = features_to_matrix_with_enc(features)
+    K = len(TASKS)
+    subj_list = sorted(set(subs))
+    runs_per_subject = int(round(float(np.mean(
+        [int(np.sum(subs == s)) for s in subj_list]
+    ))))
+
+    within_real = _within_subject_scores(X_A, y, subs, encs, subj_list)
+    within_mean = float(np.mean(within_real)) if within_real else float("nan")
+    within_std = float(np.std(within_real)) if within_real else float("nan")
+
+    # MATCHED cross-subject: sample 7 training points (one per task) per fold.
+    # Test on the held-out subjects' first-half features. This holds training
+    # size constant with within-subject.
+    matched_scores_per_seed = []
+    unmatched_scores_per_seed = []
+    for seed in seeds:
+        matched_fold, unmatched_fold = [], []
+        for tr, te in shuffled_group_folds(subs, seed=seed, k=KFOLDS):
+            clf_full = LogisticRegression(max_iter=2000, C=1.0,
+                                           multi_class="multinomial",
+                                           solver="lbfgs", random_state=seed)
+            clf_full.fit(X_A[tr], y[tr])
+            unmatched_fold.append(float(clf_full.score(X_A[te], y[te])))
+
+            rng = np.random.default_rng(seed * 1_000_003 + int(tr[0]))
+            matched_idx = []
+            for t in range(K):
+                candidates = tr[y[tr] == t]
+                if len(candidates):
+                    matched_idx.append(int(rng.choice(candidates)))
+            if len(matched_idx) < K:
+                continue
+            matched_idx = np.array(matched_idx)
+            clf_matched = LogisticRegression(max_iter=2000, C=1.0,
+                                              multi_class="multinomial",
+                                              solver="lbfgs", random_state=seed)
+            clf_matched.fit(X_A[matched_idx], y[matched_idx])
+            matched_fold.append(float(clf_matched.score(X_A[te], y[te])))
+        matched_scores_per_seed.append(
+            float(np.mean(matched_fold)) if matched_fold else float("nan"))
+        unmatched_scores_per_seed.append(
+            float(np.mean(unmatched_fold)) if unmatched_fold else float("nan"))
+    matched_mean = float(np.mean(matched_scores_per_seed))
+    matched_std = float(np.std(matched_scores_per_seed))
+    unmatched_mean = float(np.mean(unmatched_scores_per_seed))
+    unmatched_std = float(np.std(unmatched_scores_per_seed))
+
+    # PERMUTATION NULL for within-subject
+    null_scores = []
+    for perm_seed in range(n_perms):
+        rng = np.random.default_rng(perm_seed + 200_000)
+        y_perm = y.copy()
+        for s in subj_list:
+            mask = subs == s
+            idx = np.where(mask)[0]
+            perm = rng.permutation(idx)
+            y_perm[idx] = y[perm]
+        perm_scores = _within_subject_scores(X_A, y_perm, subs, encs, subj_list)
+        if perm_scores:
+            null_scores.append(float(np.mean(perm_scores)))
+
+    null_arr = np.array(null_scores) if null_scores else np.array([float("nan")])
+    within_p = float((null_arr >= within_mean).sum() / len(null_arr))
+
+    return dict(
+        within_subject_mean=within_mean,
+        within_subject_std=within_std,
+        within_subject_per_subject=within_real,
+        n_subjects_scored=int(len(within_real)),
+        runs_per_subject=int(runs_per_subject),
+        matched_cross_subject_mean=matched_mean,
+        matched_cross_subject_std=matched_std,
+        unmatched_cross_subject_mean=unmatched_mean,
+        unmatched_cross_subject_std=unmatched_std,
+        matched_per_seed=[float(x) for x in matched_scores_per_seed],
+        unmatched_per_seed=[float(x) for x in unmatched_scores_per_seed],
+        note_matched=("Matched: cross-subject LogReg fit on 7 training points "
+                       "(one per task, sampled from the train pool) to hold "
+                       "training size equal to within-subject. Unmatched: "
+                       "cross-subject LogReg on the full train pool -- reported "
+                       "for reference only; equal to variant_a linear."),
+        permutation_null_mean=float(null_arr.mean()),
+        permutation_null_std=float(null_arr.std()),
+        permutation_null_p95=float(np.percentile(null_arr, 95)),
+        permutation_null_p=within_p,
+        n_perms=int(n_perms),
+        n_perms_valid=int(len(null_scores)),
+    )
+
+
+# ========================================= ARM C: SPLIT-HALF RELIABILITY CEILING
+def variant_reliability_ceiling(features, seeds=SEEDS, kfolds=KFOLDS):
+    """Nearest-centroid classifier. Task centroids from TRAIN subjects'
+    FIRST-halves; each HELD-OUT subject's SECOND-half is classified by the
+    nearest centroid. Same 5-fold CV as linear. Same accuracy scale as
+    chance/linear.
+    """
+    X_A, X_B, y, subs, encs = features_to_matrix_with_enc(features)
+    K = len(TASKS)
+    per_seed = []
+    for seed in seeds:
+        fold_scores = []
+        for tr, te in shuffled_group_folds(subs, seed=seed, k=kfolds):
+            centroids = np.array([X_A[tr][y[tr] == t].mean(0) for t in range(K)])
+            X_test = X_B[te]
+            dists = np.linalg.norm(
+                X_test[:, None, :] - centroids[None, :, :], axis=2)
+            preds = dists.argmin(axis=1)
+            fold_scores.append(float((preds == y[te]).mean()))
+        per_seed.append(dict(seed=int(seed),
+                             mean=float(np.mean(fold_scores))))
+    means = [ps["mean"] for ps in per_seed]
+    return dict(
+        reliability_ceiling_mean=float(np.mean(means)),
+        reliability_ceiling_std=float(np.std(means)),
+        per_seed=per_seed,
+        seeds=list(map(int, seeds)),
+        kfolds=int(kfolds),
+        classifier="nearest-centroid (Euclidean)",
+        note=("Centroids fit from TRAIN subjects' FIRST-halves. Classified "
+              "HELD-OUT subjects' SECOND-halves. Same accuracy scale as "
+              "chance/linear."),
     )
 
 
@@ -238,9 +488,6 @@ def variant_b(features, seeds=SEEDS):
         for held in range(K):
             train_mask = y != held
             held_mask = y == held
-            # Model: predict held-out task's mean shift as the mean of the K-1
-            # training tasks' mean shifts (global-mean baseline for zero-shot
-            # task prediction). No per-task features exist to do better.
             training_task_means = np.array(
                 [X_A[y == t].mean(0) for t in range(K) if t != held])
             pred = training_task_means.mean(0)
@@ -266,20 +513,14 @@ def variant_b(features, seeds=SEEDS):
     )
 
 
-# ======================================================================= ORACLE
-def oracle(snr=3.0, n_subjects=40, n_regions=60, seed=42):
-    """Known-answer test. Synthetic runs where task identity is planted in a
-    known direction at fixed SNR. Fails-fast if variant_a's decoder does not
-    recover it or if chance is not at 1/K.
-    """
+# ================================================= ORACLE #1 (decoder oracle)
+def oracle_decoder(snr=3.0, n_subjects=40, n_regions=60, seed=42):
+    """Known-answer test that the LINEAR decoder recovers a planted signal."""
     rng = np.random.default_rng(seed)
     K = len(TASKS)
-
-    # Plant K distinct task directions in the top D dimensions.
     task_dirs = rng.normal(0, snr, (K, D))
-
     W = np.zeros((n_regions, D))
-    W[:D, :] = np.eye(D)                               # identity basis first D
+    W[:D, :] = np.eye(D)
 
     features = {}
     for si in range(n_subjects):
@@ -288,7 +529,7 @@ def oracle(snr=3.0, n_subjects=40, n_regions=60, seed=42):
         for i, t in enumerate(TASKS):
             for e in ENCS:
                 signal = np.zeros((NFRAMES, n_regions))
-                signal[:, :D] = task_dirs[i]           # constant across frames
+                signal[:, :D] = task_dirs[i]
                 signal += sub_offset[None, :]
                 noise = rng.normal(0, 1.0, (NFRAMES, n_regions))
                 x = signal + noise
@@ -298,23 +539,102 @@ def oracle(snr=3.0, n_subjects=40, n_regions=60, seed=42):
     res = variant_a(features, seeds=(0,), kfolds=5)
     linear = res["linear"]["mean"]
     chance = res["chance"]["mean"]
-    ceiling = res["ceiling"]["mean"]
+    encsplit = res["encode_split_nuisance"]["mean"]
     expected_chance = 1.0 / K
 
     linear_ok = linear > 0.90
     chance_ok = abs(chance - expected_chance) < 0.06
-    ceiling_ok = ceiling > 0.85
+    encsplit_ok = encsplit > 0.85
 
-    passed = bool(linear_ok and chance_ok and ceiling_ok)
+    passed = bool(linear_ok and chance_ok and encsplit_ok)
     meta = dict(
         snr=float(snr), n_synth_subjects=int(n_subjects),
         n_regions=int(n_regions), d=int(D), K=int(K), seed=int(seed),
-        linear=float(linear), chance=float(chance), ceiling=float(ceiling),
+        linear=float(linear), chance=float(chance),
+        encode_split_nuisance=float(encsplit),
         expected_chance=float(expected_chance),
         linear_ok=bool(linear_ok), chance_ok=bool(chance_ok),
-        ceiling_ok=bool(ceiling_ok),
+        encode_split_nuisance_ok=bool(encsplit_ok),
     )
     return passed, meta
+
+
+# ============================================== ORACLE #2 (ceiling oracle)
+def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
+    """Second oracle -- tests the split-half reliability-ceiling ESTIMATOR
+    itself. Synthesizes data at three known SNR levels and asserts the
+    estimator returns values in predeclared bands.
+
+      SNR = 0    (no signal)      -> expect ~ chance (1/K)
+      SNR = 2    (middle signal)  -> expect somewhere between chance and 1.0
+      SNR = 10   (strong signal)  -> expect near 1.0
+
+    If any band is missed the ceiling numbers on real data are noise.
+    """
+    K = len(TASKS)
+    W = np.zeros((n_regions, D))
+    W[:D, :] = np.eye(D)
+
+    scenarios = [
+        ("no_signal",       0.0,  (0.05, 0.25)),   # ~chance = 1/7 = 0.143
+        ("middle_signal",   2.0,  (0.30, 0.95)),
+        ("strong_signal",  10.0,  (0.90, 1.01)),
+    ]
+
+    results = {}
+    for label, snr, expected in scenarios:
+        rng = np.random.default_rng(seed + hash(label) % 10_000)
+        task_dirs = rng.normal(0, snr, (K, D)) if snr > 0 else np.zeros((K, D))
+        features = {}
+        for si in range(n_subjects):
+            s = f"synth{si:03d}"
+            sub_offset = rng.normal(0, 0.3, n_regions)
+            for i, t in enumerate(TASKS):
+                for e in ENCS:
+                    signal = np.zeros((NFRAMES, n_regions))
+                    signal[:, :D] = task_dirs[i]
+                    signal += sub_offset[None, :]
+                    noise = rng.normal(0, 1.0, (NFRAMES, n_regions))
+                    x = signal + noise
+                    m = x @ W
+                    features[(s, t, e)] = (
+                        m[:HALF].mean(0), m[HALF:NFRAMES].mean(0))
+
+        r = variant_reliability_ceiling(features, seeds=(0,), kfolds=5)
+        actual = r["reliability_ceiling_mean"]
+        lo, hi = expected
+        ok = bool(lo <= actual <= hi)
+        results[label] = dict(snr=float(snr),
+                              expected_range=[float(lo), float(hi)],
+                              actual=float(actual), ok=ok)
+
+    all_pass = bool(all(r["ok"] for r in results.values()))
+    return all_pass, dict(scenarios=results,
+                          note=("Second oracle. Independent noise between "
+                                "halves + shared task signal at 3 SNR levels; "
+                                "the split-half ceiling estimator must recover "
+                                "signal-appropriate values."))
+
+
+# ================================================= v2 nuisance for reference
+def read_v2_encode_over_split():
+    if not V2_JSON.exists():
+        return None
+    j = json.loads(V2_JSON.read_text())
+    for scaling in ("subject_pooled", "raw"):
+        try:
+            entry = j["results"][scaling][str(D)]
+        except Exception:
+            continue
+        if "encode_over_split" in entry:
+            return dict(
+                source=str(V2_JSON), scaling=scaling, d=int(D),
+                encode_over_split=float(entry["encode_over_split"]),
+                task_over_split=float(entry.get("task_over_split", float("nan"))),
+                task_over_encode=float(entry.get("task_over_encode",
+                                                 float("nan"))),
+            )
+    return None
 
 
 # ------------------------------------------------------------------------ util
@@ -330,50 +650,63 @@ def atomic_write_json(path, obj):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clean", action="store_true",
-                    help="remove the output JSON before running (lesson 4)")
-    ap.add_argument("--oracle-only", action="store_true",
-                    help="run only the oracle; skip real data")
+                    help="remove the output JSON before running")
+    ap.add_argument("--oracles-only", action="store_true",
+                    help="run only the two oracles; skip real data")
     args = ap.parse_args()
 
     if args.clean and OUT_JSON.exists():
         print(f"[clean] rm {OUT_JSON}", flush=True)
         OUT_JSON.unlink()
 
-    if OUT_JSON.exists() and not args.oracle_only:
+    if OUT_JSON.exists() and not args.oracles_only:
         print(f"[skip] {OUT_JSON} exists; --clean to overwrite", flush=True)
         return
 
-    # -------------- ORACLE FIRST
-    print("[oracle] START", flush=True)
-    passed, oracle_meta = oracle()
-    print(f"[oracle] linear={oracle_meta['linear']:.4f} "
-          f"(want > 0.90) -> {'OK' if oracle_meta['linear_ok'] else 'FAIL'}",
+    # ------------------------ ORACLE #1: decoder
+    print("[oracle #1: decoder] START", flush=True)
+    passed1, o1 = oracle_decoder()
+    print(f"[oracle #1] linear={o1['linear']:.4f} (want > 0.90) -> "
+          f"{'OK' if o1['linear_ok'] else 'FAIL'}", flush=True)
+    print(f"[oracle #1] chance={o1['chance']:.4f} (want ~ "
+          f"{o1['expected_chance']:.4f}) -> "
+          f"{'OK' if o1['chance_ok'] else 'FAIL'}", flush=True)
+    print(f"[oracle #1] encode_split_nuisance={o1['encode_split_nuisance']:.4f} "
+          f"(want > 0.85) -> {'OK' if o1['encode_split_nuisance_ok'] else 'FAIL'}",
           flush=True)
-    print(f"[oracle] chance={oracle_meta['chance']:.4f} "
-          f"(want ~ {oracle_meta['expected_chance']:.4f}) -> "
-          f"{'OK' if oracle_meta['chance_ok'] else 'FAIL'}", flush=True)
-    print(f"[oracle] ceiling={oracle_meta['ceiling']:.4f} "
-          f"(want > 0.85) -> {'OK' if oracle_meta['ceiling_ok'] else 'FAIL'}",
-          flush=True)
-    if not passed:
-        print("[oracle] FAIL -- readout mislabelled; refusing to report science",
-              flush=True)
-        atomic_write_json(OUT_JSON, dict(oracle=oracle_meta,
-                                          aborted="oracle_failed"))
+    if not passed1:
+        print("[oracle #1] FAIL -- refusing to report science", flush=True)
+        atomic_write_json(OUT_JSON, dict(oracle_decoder=o1,
+                                          aborted="oracle_decoder_failed"))
         sys.exit(1)
-    print("[oracle] PASS", flush=True)
+    print("[oracle #1] PASS", flush=True)
 
-    if args.oracle_only:
-        print("[done] --oracle-only requested; not touching real data",
-              flush=True)
+    # ------------------------ ORACLE #2: ceiling
+    print("\n[oracle #2: ceiling] START", flush=True)
+    passed2, o2 = oracle_ceiling()
+    for label, r in o2["scenarios"].items():
+        print(f"[oracle #2] {label:<15s} snr={r['snr']:5.1f} "
+              f"actual={r['actual']:.4f} expect=[{r['expected_range'][0]:.2f},"
+              f"{r['expected_range'][1]:.2f}] -> "
+              f"{'OK' if r['ok'] else 'FAIL'}", flush=True)
+    if not passed2:
+        print("[oracle #2] FAIL -- ceiling estimator does not track signal; "
+              "no ceiling number will be reported", flush=True)
+        atomic_write_json(OUT_JSON, dict(oracle_decoder=o1, oracle_ceiling=o2,
+                                          aborted="oracle_ceiling_failed"))
+        sys.exit(1)
+    print("[oracle #2] PASS", flush=True)
+
+    if args.oracles_only:
+        print("[done] --oracles-only requested", flush=True)
         return
 
-    # -------------- REAL DATA
+    # ------------------------ REAL DATA
     if not HCP_TS.is_dir():
         sys.exit(f"[fatal] HCP_TS not a directory: {HCP_TS}")
 
     subjects = find_complete_subjects()
-    print(f"[data] {len(subjects)} subjects with complete 7x2 coverage",
+    print(f"\n[data] {len(subjects)} subjects with complete 7x2 coverage",
           flush=True)
     if len(subjects) < 10:
         sys.exit(f"[fatal] too few complete subjects: {len(subjects)}")
@@ -385,21 +718,71 @@ def main():
     features = build_projected_halves(subjects, W)
     print(f"[data] {len(features)} (subject, task, enc) tuples", flush=True)
 
-    print("[variant_a] running (headline)", flush=True)
+    print("\n[variant_a] chance / linear / encode_split_nuisance", flush=True)
     va = variant_a(features, seeds=SEEDS, kfolds=KFOLDS)
     print(f"[variant_a] chance={va['chance']['mean']:.4f}  "
           f"linear={va['linear']['mean']:.4f}  "
-          f"ceiling={va['ceiling']['mean']:.4f}", flush=True)
-
-    print("[variant_b] running (UNDERPOWERED, K=7)", flush=True)
-    vb = variant_b(features, seeds=SEEDS)
-    print(f"[variant_b] r2_mean={vb['r2_mean']:.4f}  n_env={vb['n_environments']}",
+          f"encode_split_nuisance={va['encode_split_nuisance']['mean']:.4f}",
           flush=True)
 
+    print("\n[arm A] permutation null for linear "
+          f"({PERM_N} perms)", flush=True)
+    perm_a = variant_a_permutation_null(features, va["linear"]["mean"])
+    print(f"[arm A] null_mean={perm_a['null_mean']:.4f}  "
+          f"null_p95={perm_a['null_p95']:.4f}  "
+          f"p={perm_a['empirical_p']:.4f}", flush=True)
+    if not perm_a["real_clears_null_p95"]:
+        print("[arm A] STOP -- real linear does not clear null p95", flush=True)
+        atomic_write_json(OUT_JSON, dict(
+            oracle_decoder=o1, oracle_ceiling=o2,
+            variant_a=va, linear_permutation_null=perm_a,
+            aborted="linear_did_not_clear_null_p95"))
+        sys.exit(1)
+
+    print(f"\n[arm B] within-subject decoding "
+          f"({PERM_N_WITHIN} perms)", flush=True)
+    ws = variant_within_subject(features, seeds=SEEDS,
+                                 n_perms=PERM_N_WITHIN)
+    print(f"[arm B] within_mean={ws['within_subject_mean']:.4f} "
+          f"+/- {ws['within_subject_std']:.4f} "
+          f"(n_subj={ws['n_subjects_scored']}, "
+          f"runs/subj={ws['runs_per_subject']})", flush=True)
+    print(f"[arm B] matched_cross_subject={ws['matched_cross_subject_mean']:.4f}"
+          f"  unmatched={ws['unmatched_cross_subject_mean']:.4f}", flush=True)
+    print(f"[arm B] perm_null_mean={ws['permutation_null_mean']:.4f}  "
+          f"perm_null_p95={ws['permutation_null_p95']:.4f}  "
+          f"p={ws['permutation_null_p']:.4f}", flush=True)
+
+    print("\n[arm C] split-half reliability ceiling", flush=True)
+    rc = variant_reliability_ceiling(features, seeds=SEEDS, kfolds=KFOLDS)
+    print(f"[arm C] reliability_ceiling={rc['reliability_ceiling_mean']:.4f} "
+          f"+/- {rc['reliability_ceiling_std']:.4f}", flush=True)
+
+    print("\n[variant_b] leave-one-task-out (UNDERPOWERED)", flush=True)
+    vb = variant_b(features, seeds=SEEDS)
+    print(f"[variant_b] r2_mean={vb['r2_mean']:.4f}  "
+          f"n_env={vb['n_environments']}", flush=True)
+
+    v2_nuis = read_v2_encode_over_split()
+
     out = dict(
-        oracle=dict(passed=passed, **oracle_meta),
-        variant_a_headline=va,
+        oracle_decoder=dict(passed=passed1, **o1),
+        oracle_ceiling=dict(passed=passed2, **o2),
+        variant_a=va,
+        linear_permutation_null=perm_a,
+        variant_within_subject=ws,
+        variant_reliability_ceiling=rc,
         variant_b_supplementary=vb,
+        v2_nuisance=v2_nuis,
+        final_triple=dict(
+            chance=float(va["chance"]["mean"]),
+            linear=float(va["linear"]["mean"]),
+            reliability_ceiling=float(rc["reliability_ceiling_mean"]),
+            headroom=float(rc["reliability_ceiling_mean"]
+                            - va["linear"]["mean"]),
+            scale="accuracy [0, 1] (7-class task decoding)",
+            chance_reference=float(1.0 / len(TASKS)),
+        ),
         config=dict(
             scaling="subject_pooled",
             d=int(D),
@@ -409,6 +792,8 @@ def main():
             encodings=ENCS,
             kfolds=int(KFOLDS),
             seeds=list(map(int, SEEDS)),
+            perm_n_cross_subject=int(PERM_N),
+            perm_n_within_subject=int(PERM_N_WITHIN),
             classifier="LogisticRegression(multinomial, C=1.0, max_iter=2000)",
         ),
         n_subjects=int(len(subjects)),
@@ -421,21 +806,43 @@ def main():
     atomic_write_json(OUT_JSON, out)
     print(f"\n[write] {OUT_JSON}", flush=True)
 
+    # ---- Summary
     print("\n" + "=" * 78, flush=True)
-    print("HCP CEILING SUMMARY", flush=True)
+    print("HCP CEILING SUMMARY (amended)", flush=True)
     print("=" * 78, flush=True)
-    print(f"  oracle:          PASS")
-    print(f"  variant (a) HEADLINE -- held-out-subject task decoding")
-    print(f"    chance:        {va['chance']['mean']:.4f} +/- {va['chance']['std']:.4f}")
-    print(f"    linear:        {va['linear']['mean']:.4f} +/- {va['linear']['std']:.4f}")
-    print(f"    ceiling:       {va['ceiling']['mean']:.4f} +/- {va['ceiling']['std']:.4f}")
-    print(f"    n test / fold: {va['n_test_per_fold']}")
-    print(f"    n matched:     LINEAR and CEILING share held-out subjects")
-    print(f"    seeds:         {va['seeds']}")
-    print(f"  variant (b) UNDERPOWERED -- leave-one-task-out shift prediction")
-    print(f"    r2_mean:       {vb['r2_mean']:.4f} +/- {vb['r2_std']:.4f}")
-    print(f"    n env:         {vb['n_environments']}")
-    print(f"    label:         {vb['LABEL']}")
+    print(f"  oracle #1 (decoder):  PASS")
+    print(f"  oracle #2 (ceiling):  PASS")
+    print()
+    ch = va["chance"]["mean"]
+    lin = va["linear"]["mean"]
+    rce = rc["reliability_ceiling_mean"]
+    head = rce - lin
+    print(f"  chance:               {ch:.4f} (7-class task decoding)")
+    print(f"  linear:               {lin:.4f}")
+    print(f"  reliability ceiling:  {rce:.4f}  "
+          f"(nearest-centroid on split halves)")
+    print(f"  headroom (ceil-lin):  {head:+.4f}")
+    print()
+    print(f"  linear permutation null: mean={perm_a['null_mean']:.4f} "
+          f"p95={perm_a['null_p95']:.4f} p={perm_a['empirical_p']:.4f}")
+    print(f"  within-subject:       "
+          f"{ws['within_subject_mean']:.4f} +/- {ws['within_subject_std']:.4f} "
+          f"(n_subj={ws['n_subjects_scored']}, "
+          f"runs/subj={ws['runs_per_subject']})")
+    print(f"    matched cross:      {ws['matched_cross_subject_mean']:.4f}")
+    print(f"    unmatched cross:    {ws['unmatched_cross_subject_mean']:.4f} "
+          f"(reference only)")
+    print(f"    perm null p:        {ws['permutation_null_p']:.4f}")
+    print()
+    print(f"  encode/split nuisance (old ceiling): "
+          f"{va['encode_split_nuisance']['mean']:.4f}")
+    if v2_nuis:
+        print(f"  v2 encode_over_split ({v2_nuis['scaling']}, d={v2_nuis['d']}): "
+              f"{v2_nuis['encode_over_split']:.4f}")
+    print()
+    print(f"  variant (b) UNDERPOWERED r2_mean: "
+          f"{vb['r2_mean']:.4f} +/- {vb['r2_std']:.4f}  "
+          f"n_env={vb['n_environments']}")
 
 
 if __name__ == "__main__":
