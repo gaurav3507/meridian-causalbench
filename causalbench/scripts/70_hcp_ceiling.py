@@ -96,7 +96,14 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Silence sklearn 1.5+ deprecation of multi_class kwarg. On a 2000-perm run
+# these warnings printed hundreds of thousands of times and dominated
+# wall-clock (~10x slowdown per LogReg.fit call).
+warnings.filterwarnings("ignore", category=FutureWarning,
+                         module="sklearn")
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -247,7 +254,6 @@ def variant_a(features, seeds=SEEDS, kfolds=KFOLDS):
             chance = float((y[te] == maj).mean())
 
             clf = LogisticRegression(max_iter=2000, C=1.0,
-                                      multi_class="multinomial",
                                       solver="lbfgs", random_state=seed)
             clf.fit(X_A[tr], y[tr])
             linear = float(clf.score(X_A[te], y[te]))
@@ -313,7 +319,6 @@ def variant_a_permutation_null(features, real_linear, n_perms=PERM_N,
         fold_scores = []
         for tr, te in shuffled_group_folds(groups, seed=seed_base, k=kfolds):
             clf = LogisticRegression(max_iter=2000, C=1.0,
-                                      multi_class="multinomial",
                                       solver="lbfgs", random_state=seed_base)
             clf.fit(X_A[tr], y_perm[tr])
             fold_scores.append(float(clf.score(X_A[te], y_perm[te])))
@@ -361,7 +366,6 @@ def _within_subject_scores(X_A, y_labels, subs, encs, subj_list):
         direction_scores = []
         for train_mask, test_mask in [(lr_mask, rl_mask), (rl_mask, lr_mask)]:
             clf = LogisticRegression(max_iter=2000, C=1.0,
-                                      multi_class="multinomial",
                                       solver="lbfgs", random_state=0)
             clf.fit(A_s[train_mask], y_s[train_mask])
             direction_scores.append(float(clf.score(A_s[test_mask], y_s[test_mask])))
@@ -407,7 +411,6 @@ def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
         matched_fold, unmatched_fold = [], []
         for tr, te in shuffled_group_folds(subs, seed=seed, k=KFOLDS):
             clf_full = LogisticRegression(max_iter=2000, C=1.0,
-                                           multi_class="multinomial",
                                            solver="lbfgs", random_state=seed)
             clf_full.fit(X_A[tr], y[tr])
             unmatched_fold.append(float(clf_full.score(X_A[te], y[te])))
@@ -422,7 +425,6 @@ def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
                 continue
             matched_idx = np.array(matched_idx)
             clf_matched = LogisticRegression(max_iter=2000, C=1.0,
-                                              multi_class="multinomial",
                                               solver="lbfgs", random_state=seed)
             clf_matched.fit(X_A[matched_idx], y[matched_idx])
             matched_fold.append(float(clf_matched.score(X_A[te], y[te])))
@@ -540,7 +542,6 @@ def variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
             if len(set(y_s)) < K:
                 continue
             clf = LogisticRegression(max_iter=2000, C=1.0,
-                                      multi_class="multinomial",
                                       solver="lbfgs",
                                       random_state=int(seed))
             clf.fit(A_s, y_s)
@@ -580,7 +581,6 @@ def variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
                 if len(set(y_s)) < K:
                     continue
                 clf = LogisticRegression(max_iter=2000, C=1.0,
-                                          multi_class="multinomial",
                                           solver="lbfgs", random_state=0)
                 clf.fit(A_s, y_s)
                 per_subj.append(float(clf.score(B_s, y_s)))
