@@ -80,7 +80,7 @@ CTRL_LABEL = "non-targeting"
 NMIN = 100
 D_SET = (10,)
 
-ARMS = ("Co-culture", "Control", "IFNg")
+ARMS = ("Co-culture", "Control", "IFNγ")   # U+03B3 (Greek small letter gamma), verified from RNA_metadata.csv
 
 CONTROL_PREFIXES = ("NO_SITE", "ONE_NON-GENE_SITE")
 GUIDE_INDEX_RE = re.compile(r"^(.*)_\d+$")
