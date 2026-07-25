@@ -122,10 +122,12 @@ D = 10          # mean_shift_v2.py DIMS include 10; primary reporting rung
 KFOLDS = 5
 SEEDS = (0, 1, 2, 3, 4)
 PERM_N = 200          # permutation null iterations for cross-subject
-PERM_N_WITHIN = 2000  # raised from 100 (audit 2026-07-25: 100 gave p ~ 1/100
-                      # floor for within-subject; with the corrected
-                      # per-encoding shuffle every subject survives so more
-                      # perms are cheap and give finer resolution)
+PERM_N_WITHIN = 1000  # audit 2026-07-25 fix: raised from 100 to satisfy the
+                      # >=1000 spec. Tried 2000 briefly; wall-clock on the
+                      # A100 with sibling vllm processes was ~2h+ so dropped
+                      # back to spec minimum. Resolution 1/1000 is sufficient
+                      # given the linear-perm-null gap the same shuffle is
+                      # asked to detect.
 
 
 # --------------------------------------------------------------- data loading
@@ -920,11 +922,14 @@ def main():
 
     print("\n[arm C] within-subject split-half ceiling (ceiling-B)",
           flush=True)
-    cB = variant_within_subject_split_half_ceiling(features, seeds=SEEDS)
+    # Skip ceiling-B perm null on the real run: step 2 of the spec requires
+    # mean/SD across subjects only, and the perm null there adds ~184k
+    # LogReg fits (>=30 min at A100 wall-clock with sibling GPU tenants).
+    cB = variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
+                                                    run_perm=False)
     print(f"[arm C] ceiling_B={cB['ceiling_B_mean']:.4f} "
           f"+/- {cB['ceiling_B_std_across_subjects']:.4f} "
-          f"(n_subj={cB['n_subjects_scored']})  "
-          f"perm_p={cB['permutation_null_p']:.4f}", flush=True)
+          f"(n_subj={cB['n_subjects_scored']})", flush=True)
 
     print("\n[variant_b] leave-one-task-out (UNDERPOWERED)", flush=True)
     vb = variant_b(features, seeds=SEEDS)
@@ -1035,10 +1040,14 @@ def main():
     print(f"    mean:               {cBm:.4f} +/- "
           f"{cB['ceiling_B_std_across_subjects']:.4f}")
     print(f"    n_subj scored:      {cB['n_subjects_scored']}")
-    print(f"    perm null: mean={cB['permutation_null_mean']:.4f} "
-          f"p95={cB['permutation_null_p95']:.4f} "
-          f"p={cB['permutation_null_p']:.4f} "
-          f"(n_perms={cB['n_perms']})")
+    if cB.get("permutation_null_skipped"):
+        print(f"    perm null:          "
+              f"{cB.get('reason', 'skipped')}")
+    else:
+        print(f"    perm null: mean={cB['permutation_null_mean']:.4f} "
+              f"p95={cB['permutation_null_p95']:.4f} "
+              f"p={cB['permutation_null_p']:.4f} "
+              f"(n_perms={cB['n_perms']})")
     print()
     print(f"  RETIRED cross-subject nearest-centroid ceiling (0.1869): "
           f"see out['retired'] for reason")
