@@ -575,15 +575,25 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
     W = np.zeros((n_regions, D))
     W[:D, :] = np.eye(D)
 
+    # Middle-signal SNR calibration: after 88-frame averaging, per-dim noise
+    # is 1/sqrt(88) ~ 0.107 and sub_offset adds std 0.3 per dim, so the
+    # discriminative test-noise std is ~0.318. Between-class distance ~
+    # snr*sqrt(2D)~snr*sqrt(20). Per-pair correct P ~= Phi( snr*sqrt(20)/2 /
+    # 0.318 ) = Phi( snr * 7.03 ). At snr=0.20, 7-way accuracy sits around
+    # 0.6 (well inside the band). At snr=2 the pair accuracy is essentially
+    # 1.0 and 7-way saturates; that is why the previous middle scenario
+    # returned 1.0000.
     scenarios = [
-        ("no_signal",       0.0,  (0.05, 0.25)),   # ~chance = 1/7 = 0.143
-        ("middle_signal",   2.0,  (0.30, 0.95)),
-        ("strong_signal",  10.0,  (0.90, 1.01)),
+        ("no_signal",       0.0,   (0.05, 0.25)),  # ~chance = 1/7 = 0.143
+        ("middle_signal",   0.20,  (0.25, 0.95)),  # intermediate 7-way accuracy
+        ("strong_signal",  10.0,   (0.90, 1.01)),
     ]
 
     results = {}
-    for label, snr, expected in scenarios:
-        rng = np.random.default_rng(seed + hash(label) % 10_000)
+    for scen_idx, (label, snr, expected) in enumerate(scenarios):
+        # Deterministic per-scenario RNG (hash() would be non-reproducible
+        # without PYTHONHASHSEED).
+        rng = np.random.default_rng(seed + scen_idx * 1_000_003)
         task_dirs = rng.normal(0, snr, (K, D)) if snr > 0 else np.zeros((K, D))
         features = {}
         for si in range(n_subjects):
