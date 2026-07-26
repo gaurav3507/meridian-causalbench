@@ -1,0 +1,31 @@
+[load] /workspace/external/discrepancy_vae/datasets/Norman2019_raw.h5ad
+[load] kept   66738 cells x 5000 genes (controls=8907, single-pert=57831); 105 unique targets, 0 in var_names
+
+### STEP-0 GATE (control pseudo-envs; expect mean_ratio ~1.00) ###
+  [step0 n=200 d=5] mean_ratio_vs_ctrl=0.699 pairs=0.996 n_envs=44
+  [step0 n=200 d=10] mean_ratio_vs_ctrl=0.722 pairs=1.007 n_envs=44
+  [step0 n=100 d=5] mean_ratio_vs_ctrl=0.650 pairs=1.020 n_envs=89
+  [step0 n=100 d=10] mean_ratio_vs_ctrl=0.678 pairs=1.029 n_envs=89
+
+### REAL SCREEN (Norman single-perturbation envs) ###
+  [n=200 d=5] mean_ratio_vs_ctrl=3.059 pairs=3.533 coef_vs_ctrl=1.346 n_envs=101
+  [n=200 d=10] mean_ratio_vs_ctrl=3.190 pairs=3.715 coef_vs_ctrl=1.195 n_envs=101
+  [n=100 d=5] mean_ratio_vs_ctrl=2.348 pairs=2.614 coef_vs_ctrl=1.173 n_envs=105
+  [n=100 d=10] mean_ratio_vs_ctrl=2.369 pairs=2.681 coef_vs_ctrl=1.063 n_envs=105
+
+### EFFECTIVE DIMENSIONALITY (spectrum) ###
+  [d=10] n_dims_above_2x=10/10  above_noise=10/10  participation_ratio=4.45  s2/s1=0.658
+  [d=20] n_dims_above_2x=20/20  above_noise=20/20  participation_ratio=7.35  s2/s1=0.668
+  [d=50] n_dims_above_2x=39/50  above_noise=50/50  participation_ratio=13.23  s2/s1=0.683
+
+[write] /workspace/meridian-identifiability/causalbench/results/screen/norman.json
+[write] /workspace/meridian-identifiability/causalbench/results/spectrum/norman.json
+
+==============================================================================
+REFERENCE COMPARISON (Norman vs CausalBench K562 vs HCP fMRI)
+==============================================================================
+  metric                              CausalBench K562    HCP fMRI      Norman
+  mean_ratio_vs_ctrl                         2.0 - 5.6         1.0       3.190
+  effective dim (dims_above_2x)                    ~15         low          39
+  step-0 gate                              0.96 - 1.05      passed        FAIL
+  step-0 ratios: [0.699191688096698, 0.7216995131517371, 0.6495167957436173, 0.6775419765464165]
