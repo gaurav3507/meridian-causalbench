@@ -185,6 +185,28 @@ def build_projected_halves(subjects, W):
     return features
 
 
+def build_projected_halves_run_demeaned(subjects, W):
+    """Same as build_projected_halves but subtracts each run's own
+    frame-mean before forming the half-means. Used ONLY by the leak
+    diagnostic. Because the demean makes each run zero-mean over 176
+    frames, A_demeaned and B_demeaned are perfectly anti-correlated
+    (A_demeaned = -B_demeaned). Applying the leaky same-run classifier to
+    these features therefore collapses to zero accuracy (or below chance)
+    if and only if the classifier was relying on run-baseline
+    fingerprinting.
+    """
+    features = {}
+    for s in subjects:
+        runs = {(t, e): load_run(s, t, e) for t in TASKS for e in ENCS}
+        runs = _subject_pooled_scale(runs)
+        for (t, e), x in runs.items():
+            x_demeaned = x - x.mean(0)[None, :]        # per-run demean
+            m = x_demeaned @ W
+            assert m.shape == (NFRAMES, W.shape[1])
+            features[(s, t, e)] = (m[:HALF].mean(0), m[HALF:NFRAMES].mean(0))
+    return features
+
+
 def features_to_matrix(features):
     """Backwards compatible: returns (X_A, X_B, y, groups). Chance/linear
     computation MUST use exactly this shape/order to match pre-amendment
@@ -506,12 +528,24 @@ def variant_within_subject(features, seeds=SEEDS, n_perms=PERM_N_WITHIN):
     )
 
 
-# ================== ARM C: WITHIN-SUBJECT SPLIT-HALF CEILING (ceiling-B)
+# ================== LEAKY SAME-RUN SPLIT-HALF (retained for leak diagnostic)
+# RETIRED 2026-07-25 as the ceiling-B estimator (was 0.9488). In HCP each
+# task is its own run, so within a subject-encoding the task label IS the
+# run label. Fitting on A-half and scoring on B-half OF THE SAME RUN means
+# the classifier can memorise per-run nuisance (drift, head position,
+# baseline gain, subject state) as a perfect label for task. Local
+# simulation with per-run baseline_std=3 saturates this estimator at
+# accuracy 1.000 EVEN WHEN TASK SNR=0.
+#
+# The function is retained because `variant_leak_diagnostic` calls it on
+# RUN-DEMEANED features (build_projected_halves_run_demeaned): if the
+# real-data value collapses toward chance under demeaning, that documents
+# the leak for the methods section.
+#
 # WITHIN-SUBJECT ONLY. No cross-subject scoring appears in this path or its
 # oracle. This function fits and scores entirely inside each subject's own
 # 14 (task, encoding) rows, using the SAME LogisticRegression as the
-# within-subject decoder in variant_within_subject. It bounds within-subject
-# 0.375 itself and answers whether within-subject is measurement-limited.
+# within-subject decoder in variant_within_subject.
 #
 # Retired 2026-07-25: variant_reliability_ceiling (cross-subject nearest-
 # centroid classifier, 0.1869). Retired because (a) nearest-centroid does
@@ -624,6 +658,168 @@ def variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
     )
 
 
+# ========= ARM C (CORRECTED): CROSS-ENCODING SPLIT-HALF CEILING (ceiling-B)
+# Fit on the A-half of encoding E1's runs; score on the B-half of the OTHER
+# encoding E2's runs, same subject, same task labels. Then reverse
+# direction, average per subject. LR and RL are separate HCP acquisitions,
+# so no train row and no test row come from the same run -- per-run
+# nuisance cannot be memorised as a label.
+#
+# GATE: train row uses features[(s, t, train_enc)][0]; test row uses
+# features[(s, t, test_enc)][1]; the function asserts train_enc != test_enc
+# per subject. The (subject, task, encoding) triple uniquely identifies an
+# HCP run.
+def variant_cross_encoding_ceiling(features, seeds=SEEDS,
+                                    run_perm=True):
+    """Corrected ceiling-B. Cross-encoding split-half.
+
+    Same estimator as within-subject decoder (LogReg C=1.0, lbfgs). Per
+    subject, per direction:
+      train = A-halves of encoding E1 runs (7 rows, one per task)
+      test  = B-halves of encoding E2 runs (7 rows, one per task)
+    Average the two directions per subject.
+
+    RUN_DISJOINT_TRAIN_TEST is enforced by construction and by assert.
+    LR and RL are separate HCP acquisitions per PATHS_hcp.md.
+    """
+    X_A, X_B, y, subs, encs = features_to_matrix_with_enc(features)
+    K = len(TASKS)
+    subj_list = sorted(set(subs))
+
+    def _score_subject(y_labels, s, random_state):
+        mask = subs == s
+        idx = np.where(mask)[0]
+        y_s = y_labels[idx]
+        A_s = X_A[idx]
+        B_s = X_B[idx]
+        enc_s = encs[idx]
+        lr = enc_s == "LR"
+        rl = enc_s == "RL"
+        if not (lr.any() and rl.any()):
+            return None
+        if len(set(y_s[lr])) < K or len(set(y_s[rl])) < K:
+            return None
+        scores = []
+        for train_enc, test_enc in [("LR", "RL"), ("RL", "LR")]:
+            # RUN_DISJOINT_TRAIN_TEST: train uses train_enc runs, test uses
+            # test_enc runs; different encodings -> different HCP runs.
+            assert train_enc != test_enc, "train/test share a run"
+            tr_mask = enc_s == train_enc
+            te_mask = enc_s == test_enc
+            X_train = A_s[tr_mask]
+            y_train = y_s[tr_mask]
+            X_test = B_s[te_mask]
+            y_test = y_s[te_mask]
+            clf = LogisticRegression(max_iter=2000, C=1.0,
+                                      solver="lbfgs",
+                                      random_state=int(random_state))
+            clf.fit(X_train, y_train)
+            scores.append(float(clf.score(X_test, y_test)))
+        return float(np.mean(scores))
+
+    per_seed = []
+    per_subject_last = None
+    for seed in seeds:
+        vals = []
+        for s in subj_list:
+            v = _score_subject(y, s, seed)
+            if v is not None:
+                vals.append(v)
+        per_seed.append(dict(seed=int(seed),
+                             mean=float(np.mean(vals)) if vals else float("nan"),
+                             std=float(np.std(vals)) if vals else float("nan"),
+                             n_scored=int(len(vals))))
+        per_subject_last = vals
+    means = [ps["mean"] for ps in per_seed]
+
+    # Permutation null with corrected shuffle scheme.
+    if run_perm:
+        null_scores = []
+        for perm_seed in range(PERM_N_WITHIN):
+            rng = np.random.default_rng(perm_seed + 400_000)
+            y_perm = _shuffle_within_encoding(y, subs, encs, subj_list, rng)
+            vals = []
+            for s in subj_list:
+                v = _score_subject(y_perm, s, 0)
+                if v is not None:
+                    vals.append(v)
+            if vals:
+                null_scores.append(float(np.mean(vals)))
+        null_arr = (np.array(null_scores) if null_scores
+                    else np.array([float("nan")]))
+        perm_p = float(
+            (null_arr >= float(np.mean(means))).sum() / len(null_arr))
+        perm_block = dict(
+            permutation_null_mean=float(null_arr.mean()),
+            permutation_null_std=float(null_arr.std()),
+            permutation_null_p95=float(np.percentile(null_arr, 95)),
+            permutation_null_p=perm_p,
+            n_perms=int(PERM_N_WITHIN),
+            permutation_scheme="SHUFFLE_WITHIN_SUBJECT_AND_ENCODING",
+        )
+    else:
+        perm_block = dict(permutation_null_skipped=True,
+                          reason="run_perm=False (oracle mode)")
+
+    n_features = int(X_A.shape[1])
+    return dict(
+        ceiling_B_cross_encoding_mean=float(np.mean(means)),
+        ceiling_B_cross_encoding_std_across_subjects=(
+            float(np.mean([ps["std"] for ps in per_seed]))),
+        ceiling_B_cross_encoding_std_across_seeds=float(np.std(means)),
+        n_subjects_scored=int(per_seed[0]["n_scored"]),
+        n_features=n_features,
+        n_train_points_per_subject_per_direction=int(K),
+        per_seed=per_seed,
+        per_subject_last_seed=[float(v) for v in (per_subject_last or [])],
+        seeds=list(map(int, seeds)),
+        classifier="LogisticRegression(multinomial, C=1.0, max_iter=2000)",
+        scoring_path=("RUN_DISJOINT_TRAIN_TEST: train uses encoding E1 runs "
+                       "(A-halves); test uses encoding E2 runs (B-halves); "
+                       "E1 != E2. Same subject and same task. LR and RL are "
+                       "separate HCP acquisitions (PATHS_hcp.md), so no run "
+                       "is shared."),
+        note=("Replaces the retired same-run split-half ceiling (0.9488) "
+              "which was inflated by per-run nuisance fingerprinting because "
+              "task==run in HCP."),
+        **perm_block,
+    )
+
+
+# ================ LEAK DIAGNOSTIC (documents 0.9488's provenance)
+def variant_leak_diagnostic(subjects, W, seeds=SEEDS):
+    """Confirm that the retired 0.9488 was run-baseline fingerprinting.
+    Rebuild features with per-run frame demeaning
+    (build_projected_halves_run_demeaned) and re-run the leaky same-run
+    estimator. Because A_demeaned = -B_demeaned by construction (a
+    run-demeaned run has zero frame-mean, so A and B are exact mirrors),
+    the leaky estimator collapses to ~0.0 if it was relying on run-level
+    baselines and stays at ~chance-or-above otherwise. Also report the
+    original (non-demeaned) value on the same subjects for a paired
+    contrast.
+    """
+    features_orig = build_projected_halves(subjects, W)
+    features_dem = build_projected_halves_run_demeaned(subjects, W)
+    orig = variant_within_subject_split_half_ceiling(
+        features_orig, seeds=seeds, run_perm=False)
+    dem = variant_within_subject_split_half_ceiling(
+        features_dem, seeds=seeds, run_perm=False)
+    return dict(
+        original_same_run=dict(mean=orig["ceiling_B_mean"],
+                                std=orig["ceiling_B_std_across_subjects"],
+                                n_subjects_scored=orig["n_subjects_scored"]),
+        run_demeaned_same_run=dict(mean=dem["ceiling_B_mean"],
+                                    std=dem["ceiling_B_std_across_subjects"],
+                                    n_subjects_scored=dem["n_subjects_scored"]),
+        interpretation=("A_demeaned and B_demeaned are perfect mirrors by "
+                         "construction, so any leaky classifier trained on A "
+                         "and tested on B is systematically WRONG on demeaned "
+                         "data. A collapse from ~0.95 (original) toward 0.0 "
+                         "confirms the original was run-baseline "
+                         "fingerprinting."),
+    )
+
+
 # ==================================================================== VARIANT B
 def variant_b(features, seeds=SEEDS):
     """Leave-one-task-out shift prediction. K=7, UNDERPOWERED."""
@@ -728,22 +924,21 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
     W = np.zeros((n_regions, D))
     W[:D, :] = np.eye(D)
 
-    # Oracle for the NEW within-subject split-half estimator. Tests the
-    # SAME estimator variant_within_subject_split_half_ceiling uses on real
-    # data. Middle-signal SNR calibrated to the LogReg 14-train / 14-test
-    # regime: per-dim signal is snr, per-dim frame-averaged test noise is
-    # 1/sqrt(88) ~ 0.107. Local simulation confirms snr=0.10 lands near
-    # 0.52 accuracy (well inside the middle band) and snr=10 saturates.
+    # Oracle for the CORRECTED cross-encoding split-half estimator.
+    # (variant_cross_encoding_ceiling). Adds a 4th scenario: no task signal
+    # + STRONG per-run baseline. The retired same-run estimator saturated
+    # to ~1.0 in that setting (pure run fingerprinting); the corrected
+    # cross-encoding estimator must stay at chance because train and test
+    # come from different runs so per-run baselines cannot be memorised.
     scenarios = [
-        ("no_signal",       0.0,   (0.05, 0.30)),  # ~chance = 1/7 = 0.143
-        ("middle_signal",   0.10,  (0.30, 0.90)),  # intermediate 7-way
-        ("strong_signal",  10.0,   (0.90, 1.01)),
+        ("no_signal",             0.0,   0.0, (0.05, 0.30)),
+        ("middle_signal",         0.10,  0.0, (0.20, 0.85)),
+        ("strong_signal",        10.0,   0.0, (0.90, 1.01)),
+        ("leak_resistance",       0.0,   3.0, (0.05, 0.30)),
     ]
 
     results = {}
-    for scen_idx, (label, snr, expected) in enumerate(scenarios):
-        # Deterministic per-scenario RNG (hash() would be non-reproducible
-        # without PYTHONHASHSEED).
+    for scen_idx, (label, snr, run_baseline_std, expected) in enumerate(scenarios):
         rng = np.random.default_rng(seed + scen_idx * 1_000_003)
         task_dirs = rng.normal(0, snr, (K, D)) if snr > 0 else np.zeros((K, D))
         features = {}
@@ -752,34 +947,43 @@ def oracle_ceiling(seed=42, n_subjects=40, n_regions=60):
             sub_offset = rng.normal(0, 0.3, n_regions)
             for i, t in enumerate(TASKS):
                 for e in ENCS:
+                    # Independent per-run baseline (this is the leak the
+                    # retired same-run estimator memorised).
+                    run_offset = (rng.normal(0, run_baseline_std, n_regions)
+                                   if run_baseline_std > 0
+                                   else np.zeros(n_regions))
                     signal = np.zeros((NFRAMES, n_regions))
                     signal[:, :D] = task_dirs[i]
                     signal += sub_offset[None, :]
+                    signal += run_offset[None, :]
                     noise = rng.normal(0, 1.0, (NFRAMES, n_regions))
                     x = signal + noise
                     m = x @ W
                     features[(s, t, e)] = (
                         m[:HALF].mean(0), m[HALF:NFRAMES].mean(0))
 
-        # NEW estimator only (no cross-subject scoring).
-        r = variant_within_subject_split_half_ceiling(
+        # CORRECTED estimator (cross-encoding split-half). No same-run
+        # scoring. RUN_DISJOINT_TRAIN_TEST is asserted inside the function.
+        r = variant_cross_encoding_ceiling(
             features, seeds=(0,), run_perm=False)
-        actual = r["ceiling_B_mean"]
+        actual = r["ceiling_B_cross_encoding_mean"]
         lo, hi = expected
         ok = bool(lo <= actual <= hi)
         results[label] = dict(snr=float(snr),
+                              run_baseline_std=float(run_baseline_std),
                               expected_range=[float(lo), float(hi)],
                               actual=float(actual), ok=ok)
 
     all_pass = bool(all(r["ok"] for r in results.values()))
     return all_pass, dict(
         scenarios=results,
-        estimator="variant_within_subject_split_half_ceiling",
-        note=("Second oracle. Tests the WITHIN-SUBJECT SPLIT-HALF estimator "
-              "(LogReg A-halves -> B-halves, same subject) at three known SNR "
-              "levels. Independent noise between halves + shared task signal. "
-              "This replaces the retired oracle for the cross-subject "
-              "nearest-centroid ceiling."))
+        estimator="variant_cross_encoding_ceiling",
+        note=("Second oracle. Tests the corrected CROSS-ENCODING SPLIT-HALF "
+              "estimator (LogReg A-halves of E1 runs -> B-halves of E2 "
+              "runs, same subject, same task, E1 != E2). Includes a "
+              "leak-resistance scenario (SNR=0 + strong per-run baseline) "
+              "that saturated the retired same-run estimator to 1.0 but "
+              "must stay at chance under the corrected split."))
 
 
 # ================================================= v2 nuisance for reference
@@ -848,12 +1052,15 @@ def main():
     print("[oracle #1] PASS", flush=True)
 
     # ------------------------ ORACLE #2: within-subject split-half ceiling
-    print("\n[oracle #2: within-subject split-half ceiling] START",
+    print("\n[oracle #2: cross-encoding split-half ceiling] START",
           flush=True)
     passed2, o2 = oracle_ceiling()
     for label, r in o2["scenarios"].items():
-        print(f"[oracle #2] {label:<15s} snr={r['snr']:5.1f} "
-              f"actual={r['actual']:.4f} expect=[{r['expected_range'][0]:.2f},"
+        rb = r.get("run_baseline_std", 0.0)
+        print(f"[oracle #2] {label:<18s} snr={r['snr']:5.2f} "
+              f"run_baseline_std={rb:4.1f} "
+              f"actual={r['actual']:.4f} "
+              f"expect=[{r['expected_range'][0]:.2f},"
               f"{r['expected_range'][1]:.2f}] -> "
               f"{'OK' if r['ok'] else 'FAIL'}", flush=True)
     if not passed2:
@@ -920,16 +1127,28 @@ def main():
           f"perm_null_p95={ws['permutation_null_p95']:.4f}  "
           f"p={ws['permutation_null_p']:.4f}", flush=True)
 
-    print("\n[arm C] within-subject split-half ceiling (ceiling-B)",
+    print("\n[arm C] cross-encoding split-half ceiling (ceiling-B, corrected)",
           flush=True)
-    # Skip ceiling-B perm null on the real run: step 2 of the spec requires
-    # mean/SD across subjects only, and the perm null there adds ~184k
-    # LogReg fits (>=30 min at A100 wall-clock with sibling GPU tenants).
-    cB = variant_within_subject_split_half_ceiling(features, seeds=SEEDS,
-                                                    run_perm=False)
-    print(f"[arm C] ceiling_B={cB['ceiling_B_mean']:.4f} "
-          f"+/- {cB['ceiling_B_std_across_subjects']:.4f} "
-          f"(n_subj={cB['n_subjects_scored']})", flush=True)
+    cB = variant_cross_encoding_ceiling(features, seeds=SEEDS,
+                                          run_perm=True)
+    print(f"[arm C] ceiling_B={cB['ceiling_B_cross_encoding_mean']:.4f} "
+          f"+/- {cB['ceiling_B_cross_encoding_std_across_subjects']:.4f} "
+          f"(n_subj={cB['n_subjects_scored']}, "
+          f"n_features={cB['n_features']}, "
+          f"n_train_per_dir={cB['n_train_points_per_subject_per_direction']})",
+          flush=True)
+    if not cB.get("permutation_null_skipped"):
+        print(f"[arm C] perm_null_mean={cB['permutation_null_mean']:.4f}  "
+              f"perm_null_p95={cB['permutation_null_p95']:.4f}  "
+              f"p={cB['permutation_null_p']:.4f} "
+              f"(n_perms={cB['n_perms']})", flush=True)
+
+    print("\n[leak-diagnostic] retired same-run split-half on original vs "
+          "per-run-demeaned features", flush=True)
+    leak = variant_leak_diagnostic(subjects, W, seeds=SEEDS)
+    print(f"[leak-diagnostic] original_same_run={leak['original_same_run']['mean']:.4f}  "
+          f"run_demeaned_same_run={leak['run_demeaned_same_run']['mean']:.4f}",
+          flush=True)
 
     print("\n[variant_b] leave-one-task-out (UNDERPOWERED)", flush=True)
     vb = variant_b(features, seeds=SEEDS)
@@ -941,7 +1160,8 @@ def main():
     ch = float(va["chance"]["mean"])
     lin = float(va["linear"]["mean"])
     cA = float(ws["within_subject_mean"])
-    cBm = float(cB["ceiling_B_mean"])
+    cBm = float(cB["ceiling_B_cross_encoding_mean"])
+    n_features = int(cB["n_features"])
 
     out = dict(
         oracle_decoder=dict(passed=passed1, **o1),
@@ -949,24 +1169,36 @@ def main():
         variant_a=va,
         linear_permutation_null=perm_a,
         variant_within_subject=ws,
-        variant_within_subject_split_half_ceiling=cB,
+        variant_cross_encoding_ceiling=cB,
+        variant_leak_diagnostic=leak,
         variant_b_supplementary=vb,
         v2_nuisance=v2_nuis,
         final_table=dict(
             chance=ch,
             cross_subject_linear=lin,
             ceiling_A_within_subject_transfer=cA,
-            ceiling_B_within_subject_measurement=cBm,
+            ceiling_B_cross_encoding_split_half=cBm,
             headroom_linear_to_ceiling_A=cA - lin,
             headroom_linear_to_ceiling_B=cBm - lin,
-            headroom_within_subject_to_ceiling_B=cBm - cA,
+            headroom_ceiling_A_to_ceiling_B=cBm - cA,
             scale="accuracy [0, 1] (7-class task decoding)",
             chance_reference=float(1.0 / len(TASKS)),
-            note=("Ceiling-A bounds what perfect subject alignment would "
-                   "buy the cross-subject decoder. Ceiling-B bounds what the "
-                   "measurement supports at all. If ceiling-B is close to "
-                   "ceiling-A, within-subject is itself at its measurement "
-                   "ceiling."),
+            n_features=n_features,
+            n_train_points_ceiling_A=7,
+            n_train_points_ceiling_B_per_direction=7,
+            n_train_points_note=(f"n_features={n_features} vs 7 training "
+                                  f"points per class per direction; the "
+                                  f"ceilings are estimated in a thin regime, "
+                                  f"stated explicitly."),
+            note=("Ceiling-A: within-subject LR<->RL cross-encoding transfer "
+                   "of the SAME decoder. Bounds what perfect subject "
+                   "alignment would buy the cross-subject decoder. "
+                   "Ceiling-B: cross-encoding SPLIT-HALF (train A-half of "
+                   "one encoding, test B-half of the other, same subject "
+                   "same task). Bounds what the measurement supports when "
+                   "task IS run in HCP. If ceiling-B is close to ceiling-A, "
+                   "ceiling-A itself IS the measurement ceiling and there "
+                   "is no headroom beyond subject alignment."),
         ),
         retired=dict(
             reliability_ceiling_cross_subject_nearest_centroid=(
@@ -975,6 +1207,18 @@ def main():
                 "bound, and it inherited the same between-subject penalty as "
                 "the linear score. Any headroom vs linear was noise between "
                 "two similarly-limited estimators."),
+            ceiling_B_same_run_split_half=(
+                "0.9488. Retired 2026-07-25 (later) -- in HCP task IS run, so "
+                "fitting on A-half and scoring on B-half OF THE SAME RUN lets "
+                "the classifier memorise per-run nuisance (drift, head "
+                "position, baseline gain) as a perfect label for task. Local "
+                "simulation with per-run baseline_std=3 saturates the "
+                "same-run estimator at 1.000 even at task SNR=0. The leak "
+                "diagnostic (per-run demean, same-run classifier) collapses "
+                "the number toward 0 by A=-B identity, confirming leak."),
+            ceiling_B_same_run_headroom_derived=(
+                "The +0.7689 and +0.5738 headrooms derived from the retired "
+                "0.9488 are also retired."),
         ),
         config=dict(
             scaling="subject_pooled",
@@ -1001,28 +1245,37 @@ def main():
 
     # ---- Summary
     print("\n" + "=" * 78, flush=True)
-    print("HCP CEILING SUMMARY (amended, two ceilings)", flush=True)
+    print("HCP CEILING SUMMARY (amended, corrected cross-encoding ceiling-B)",
+          flush=True)
     print("=" * 78, flush=True)
-    print(f"  oracle #1 (decoder):                 PASS")
-    print(f"  oracle #2 (within-subject split-half): PASS")
+    print(f"  oracle #1 (decoder):                         PASS")
+    print(f"  oracle #2 (cross-encoding split-half):       PASS")
     print()
-    print("  FINAL TABLE (all on 7-class accuracy scale)")
-    print(f"    chance:                            {ch:.4f}")
-    print(f"    cross-subject linear:              {lin:.4f}")
-    print(f"    ceiling-A (transfer, within-subj): {cA:.4f}")
-    print(f"    ceiling-B (measurement, split-half): {cBm:.4f}")
-    print(f"    headroom linear -> ceiling-A:      "
-          f"{cA - lin:+.4f}")
-    print(f"    headroom linear -> ceiling-B:      "
-          f"{cBm - lin:+.4f}")
-    print(f"    headroom ceiling-A -> ceiling-B:   "
-          f"{cBm - cA:+.4f}")
+    print("  FINAL TABLE (all on 7-class accuracy scale, n_features="
+          f"{n_features})")
+    print(f"    chance:                                  {ch:.4f}")
+    print(f"    cross-subject linear:                    {lin:.4f}   "
+          f"p={perm_a['empirical_p']:.4f}")
+    print(f"    ceiling-A (LR<->RL transfer, same subj): {cA:.4f}   "
+          f"p={ws['permutation_null_p']:.4f}   n_train_per_dir=7")
+    print(f"    ceiling-B (cross-encoding split-half):   {cBm:.4f}   "
+          + (f"p={cB['permutation_null_p']:.4f}   "
+             if not cB.get('permutation_null_skipped') else "")
+          + f"n_train_per_dir=7")
     print()
-    print(f"  linear permutation null: mean={perm_a['null_mean']:.4f} "
+    print(f"    headroom linear   -> ceiling-A:  {cA - lin:+.4f}")
+    print(f"    headroom linear   -> ceiling-B:  {cBm - lin:+.4f}")
+    print(f"    headroom ceiling-A -> ceiling-B: {cBm - cA:+.4f}")
+    if abs(cBm - cA) < 0.05:
+        print(f"    -> ceiling-B is within 0.05 of ceiling-A: within-subject "
+              f"IS at its measurement ceiling; no headroom beyond subject "
+              f"alignment.")
+    print()
+    print(f"  arm A linear permutation null: mean={perm_a['null_mean']:.4f} "
           f"p95={perm_a['null_p95']:.4f} p={perm_a['empirical_p']:.4f} "
           f"(n_perms={perm_a['n_perms']})")
     print()
-    print(f"  within-subject decoding (ceiling-A):")
+    print(f"  arm B within-subject decoding (ceiling-A):")
     print(f"    mean:               {cA:.4f} +/- "
           f"{ws['within_subject_std']:.4f}")
     print(f"    n_subj scored:      {ws['n_subjects_scored']}, "
@@ -1036,10 +1289,12 @@ def main():
           f"(n_perms={ws['n_perms']}, "
           f"dropped/perm={ws['n_subjects_dropped_per_perm_mean']:.2f})")
     print()
-    print(f"  within-subject split-half ceiling (ceiling-B):")
+    print(f"  arm C cross-encoding split-half ceiling (ceiling-B, corrected):")
     print(f"    mean:               {cBm:.4f} +/- "
-          f"{cB['ceiling_B_std_across_subjects']:.4f}")
+          f"{cB['ceiling_B_cross_encoding_std_across_subjects']:.4f}")
     print(f"    n_subj scored:      {cB['n_subjects_scored']}")
+    print(f"    n_features:         {cB['n_features']}")
+    print(f"    scoring path:       {cB['scoring_path']}")
     if cB.get("permutation_null_skipped"):
         print(f"    perm null:          "
               f"{cB.get('reason', 'skipped')}")
@@ -1047,11 +1302,19 @@ def main():
         print(f"    perm null: mean={cB['permutation_null_mean']:.4f} "
               f"p95={cB['permutation_null_p95']:.4f} "
               f"p={cB['permutation_null_p']:.4f} "
-              f"(n_perms={cB['n_perms']})")
+              f"(n_perms={cB['n_perms']}, scheme={cB['permutation_scheme']})")
     print()
-    print(f"  RETIRED cross-subject nearest-centroid ceiling (0.1869): "
-          f"see out['retired'] for reason")
-    print(f"  encode/split ratio at same decoder (nuisance): "
+    print(f"  LEAK DIAGNOSTIC on the retired same-run split-half:")
+    print(f"    original same-run:      "
+          f"{leak['original_same_run']['mean']:.4f} (should reproduce ~0.9488)")
+    print(f"    run-demeaned same-run:  "
+          f"{leak['run_demeaned_same_run']['mean']:.4f} "
+          f"(low value confirms leak)")
+    print()
+    print(f"  RETIRED:")
+    print(f"    - cross-subject nearest-centroid ceiling (0.1869)")
+    print(f"    - same-run split-half ceiling-B (0.9488) and derived headrooms")
+    print(f"  encode/split ratio at cross-subject decoder (nuisance): "
           f"{va['encode_split_nuisance']['mean']:.4f}")
     if v2_nuis:
         print(f"  v2 encode_over_split ({v2_nuis['scaling']}, d={v2_nuis['d']}): "
