@@ -1184,12 +1184,18 @@ def main():
             scale="accuracy [0, 1] (7-class task decoding)",
             chance_reference=float(1.0 / len(TASKS)),
             n_features=n_features,
-            n_train_points_ceiling_A=7,
+            n_train_points_ceiling_A_per_direction=7,
             n_train_points_ceiling_B_per_direction=7,
-            n_train_points_note=(f"n_features={n_features} vs 7 training "
-                                  f"points per class per direction; the "
-                                  f"ceilings are estimated in a thin regime, "
-                                  f"stated explicitly."),
+            n_train_points_note=(f"n_features={n_features}. Ceiling-A and "
+                                  f"ceiling-B each train on 7 rows (one per "
+                                  f"class) per direction, then average LR-> "
+                                  f"RL and RL->LR. 7 training rows for 7 "
+                                  f"classes at n_features={n_features} is a "
+                                  f"thin regime -- one example per class, "
+                                  f"n_features is the same order as "
+                                  f"n_train_rows. This is stated so the "
+                                  f"numbers are not read as coming from an "
+                                  f"asymptotic estimator."),
             note=("Ceiling-A: within-subject LR<->RL cross-encoding transfer "
                    "of the SAME decoder. Bounds what perfect subject "
                    "alignment would buy the cross-subject decoder. "
