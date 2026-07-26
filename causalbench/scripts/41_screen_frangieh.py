@@ -246,13 +246,19 @@ def load_expression(path, wanted_cells, hvg=None):
 
 
 # ------------------------------------------------------------------ screen core
-def screen_run(X, iv, vn, nmin, d, step0):
+def screen_run(X, iv, vn, nmin, d, step0, seed=SEED, no_drop=False):
     """Mirror of 03_screen.py run(): identical arithmetic, Frangieh as input.
+
+    seed: RNG seed for subsampling and pair selection. Default SEED=0
+        preserves the pre-seed-sweep numbers byte-for-byte.
+    no_drop: when True, the target-column drop in project() is disabled
+        (drops=set() everywhere). Used by --no-drop in the drop-sensitivity
+        rerun.
 
     Returns a dict. On too-few-environments it returns the dict with an
     'aborted' key rather than raising, matching 40_screen_norman.py:120-122.
     """
-    rng = np.random.default_rng(SEED)
+    rng = np.random.default_rng(seed)
     half = nmin // 2
     gidx = {g: i for i, g in enumerate(vn)}
     ctrl_rows = np.where(iv == CTRL_LABEL)[0]
@@ -260,6 +266,7 @@ def screen_run(X, iv, vn, nmin, d, step0):
     if len(ctrl_rows) < nmin:
         return dict(step0=step0, nmin=nmin, d=d, n_envs=0,
                     n_control_cells=int(len(ctrl_rows)),
+                    seed=int(seed), no_drop=bool(no_drop),
                     aborted="fewer_control_cells_than_nmin")
 
     mu, W = fit_pca(X[ctrl_rows], d)
@@ -279,12 +286,14 @@ def screen_run(X, iv, vn, nmin, d, step0):
 
     if len(envs) < 4:
         return dict(step0=step0, nmin=nmin, d=d, n_envs=len(envs),
+                    seed=int(seed), no_drop=bool(no_drop),
                     aborted="fewer_than_4_envs")
 
     within_c, within_m, between_c, between_m = [], [], [], []
     for g, rows, drop in envs:
         rows = rng.choice(rows, nmin, replace=False)
-        drops = {drop} if drop is not None else set()
+        drops = (set() if no_drop
+                 else ({drop} if drop is not None else set()))
         Z = project(X[rows], mu, W, drops)
         Za, Zb = Z[:half], Z[half:nmin]
         within_c.append(np.abs(offdiag(coefs(Za)) - offdiag(coefs(Zb))))
@@ -300,7 +309,8 @@ def screen_run(X, iv, vn, nmin, d, step0):
     for _ in range(min(N_PAIRS, len(envs) * (len(envs) - 1) // 2)):
         i, j = rng.choice(len(envs), 2, replace=False)
         (ga, ra, da), (gb, rb, db) = envs[i], envs[j]
-        drops = {x for x in (da, db) if x is not None}
+        drops = (set() if no_drop
+                 else {x for x in (da, db) if x is not None})
         Za = project(X[rng.choice(ra, half, replace=False)], mu, W, drops)
         Zb = project(X[rng.choice(rb, half, replace=False)], mu, W, drops)
         pair_c.append(np.abs(offdiag(coefs(Za)) - offdiag(coefs(Zb))))
@@ -314,6 +324,7 @@ def screen_run(X, iv, vn, nmin, d, step0):
     return dict(
         step0=step0, nmin=nmin, d=d, n_envs=len(envs), n_fit=half,
         n_control_cells=int(len(ctrl_rows)),
+        seed=int(seed), no_drop=bool(no_drop),
         # PRIMARY
         mean_ratio_pairs=float(np.median(pair_m) / np.median(within_m)),
         coef_ratio_pairs=float(np.median(pc) / np.median(wc)),
@@ -335,15 +346,105 @@ def atomic_write_json(path, obj):
 
 
 # ------------------------------------------------------------------------- main
+def _run_one_seed(X, iv_all, cond_all, vn, meta, nmin, seed, no_drop):
+    """Run the per-arm screen at a single seed. Returns arms_out dict.
+    Loading is done ONCE in main; this reuses (X, iv_all, cond_all, vn).
+    """
+    arms_out = {}
+    for arm in ARMS:
+        sel = cond_all == arm
+        n_arm = int(sel.sum())
+        print(f"\n{'=' * 60}\n  seed={seed} no_drop={no_drop} ARM {arm}  "
+              f"({n_arm} MOI==1 cells)\n{'=' * 60}", flush=True)
+        if n_arm == 0:
+            arms_out[arm] = dict(n_cells=0, aborted="no_cells_for_arm")
+            continue
+
+        X_arm = np.ascontiguousarray(X[sel])
+        iv_arm = iv_all[sel]
+
+        us, cs = np.unique(iv_arm, return_counts=True)
+        n_ctrl_arm = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
+        surviving = [(g, int(n)) for g, n in zip(us, cs)
+                     if g != CTRL_LABEL and n >= nmin]
+        print(f"    control cells in arm : {n_ctrl_arm}", flush=True)
+        print(f"    targets total        : {int((us != CTRL_LABEL).sum())}",
+              flush=True)
+        print(f"    targets >= NMIN={nmin}   : {len(surviving)}", flush=True)
+
+        step0_runs, screen_runs = [], []
+        for d in D_SET:
+            r0 = screen_run(X_arm, iv_arm, vn, nmin, d, step0=True,
+                             seed=seed, no_drop=no_drop)
+            step0_runs.append(r0)
+            if "aborted" in r0:
+                print(f"    [step0 d={d}] ABORTED: {r0['aborted']}",
+                      flush=True)
+            else:
+                print(f"    [step0 d={d}] mean_ratio_pairs="
+                      f"{r0['mean_ratio_pairs']:.3f}  n_envs={r0['n_envs']}",
+                      flush=True)
+
+            r1 = screen_run(X_arm, iv_arm, vn, nmin, d, step0=False,
+                             seed=seed, no_drop=no_drop)
+            screen_runs.append(r1)
+            if "aborted" in r1:
+                print(f"    [screen d={d}] ABORTED: {r1['aborted']}",
+                      flush=True)
+            else:
+                print(f"    [screen d={d}] mean_ratio_pairs="
+                      f"{r1['mean_ratio_pairs']:.3f}  n_envs={r1['n_envs']}",
+                      flush=True)
+
+        gate_vals = [r["mean_ratio_pairs"] for r in step0_runs
+                     if "mean_ratio_pairs" in r]
+        gate_pass = (all(0.9 <= x <= 1.1 for x in gate_vals)
+                     if gate_vals else False)
+        prim = next((r for r in screen_runs
+                     if r.get("d") == D_SET[0] and "aborted" not in r), None)
+
+        arms_out[arm] = dict(
+            n_cells=n_arm,
+            n_control_cells=n_ctrl_arm,
+            n_targets_total=int((us != CTRL_LABEL).sum()),
+            n_targets_surviving_nmin=len(surviving),
+            surviving_targets=[g for g, _ in surviving],
+            step0_gate=step0_runs,
+            screen=screen_runs,
+            summary=dict(
+                nmin=nmin, d=D_SET[0], seed=int(seed), no_drop=bool(no_drop),
+                step0_gate_metric="mean_ratio_pairs",
+                step0_pairs=gate_vals,
+                step0_pass=gate_pass,
+                n_envs=prim.get("n_envs") if prim else None,
+                mean_ratio_pairs=prim.get("mean_ratio_pairs") if prim else None,
+                coef_ratio_pairs=prim.get("coef_ratio_pairs") if prim else None,
+                aborted=None if prim else "no_valid_screen_run",
+            ),
+        )
+    return arms_out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hvg", type=int, default=None,
                     help="cap to the N most variable genes (default: all)")
     ap.add_argument("--nmin", type=int, default=NMIN)
-    ap.add_argument("--out", default=str(SCREEN_DIR / "frangieh.json"))
+    ap.add_argument("--seeds", default="0",
+                    help="comma-separated list of RNG seeds (default: 0)")
+    ap.add_argument("--no-drop", action="store_true",
+                    help="disable the target-column drop in project()")
+    ap.add_argument("--tag", default="",
+                    help="suffix appended to output filename")
+    ap.add_argument("--out", default=None,
+                    help="explicit output path (overrides --tag)")
     a = ap.parse_args()
 
-    out_path = Path(a.out)
+    seeds = [int(s) for s in a.seeds.split(",")]
+    tag = a.tag or ("_seeds" + "".join(str(s) for s in seeds)
+                    + ("_nodrop" if a.no_drop else ""))
+    out_path = Path(a.out) if a.out else (
+        SCREEN_DIR / f"frangieh{tag}.json")
     if out_path.exists():
         print(f"[skip] {out_path} already exists", flush=True)
         return
@@ -379,121 +480,74 @@ def main():
           f"(target-column drop is "
           f"{'a NO-OP' if in_cols == 0 else 'LIVE'})", flush=True)
 
-    arms_out = {}
-    for arm in ARMS:
-        sel = cond_all == arm
-        n_arm = int(sel.sum())
-        print(f"\n{'=' * 78}\nARM {arm}  ({n_arm} MOI==1 cells)\n{'=' * 78}",
-              flush=True)
-        if n_arm == 0:
-            arms_out[arm] = dict(n_cells=0, aborted="no_cells_for_arm")
-            print("  no cells; skipping", flush=True)
-            continue
+    per_seed = {}
+    for seed in seeds:
+        arms_out = _run_one_seed(X, iv_all, cond_all, vn, meta, a.nmin,
+                                  seed, a.no_drop)
+        per_seed[str(seed)] = arms_out
 
-        X_arm = np.ascontiguousarray(X[sel])
-        iv_arm = iv_all[sel]
-
-        us, cs = np.unique(iv_arm, return_counts=True)
-        n_ctrl_arm = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
-        surviving = [(g, int(n)) for g, n in zip(us, cs)
-                     if g != CTRL_LABEL and n >= a.nmin]
-        print(f"  control cells in arm : {n_ctrl_arm}", flush=True)
-        print(f"  targets total        : {int((us != CTRL_LABEL).sum())}",
-              flush=True)
-        print(f"  targets >= NMIN={a.nmin}   : {len(surviving)}", flush=True)
-
-        step0_runs, screen_runs = [], []
-        for d in D_SET:
-            r0 = screen_run(X_arm, iv_arm, vn, a.nmin, d, step0=True)
-            step0_runs.append(r0)
-            if "aborted" in r0:
-                print(f"  [step0 d={d}] ABORTED: {r0['aborted']} "
-                      f"(n_envs={r0.get('n_envs')})", flush=True)
-            else:
-                print(f"  [step0 d={d}] mean_ratio_pairs="
-                      f"{r0['mean_ratio_pairs']:.3f}  n_envs={r0['n_envs']}",
-                      flush=True)
-
-            r1 = screen_run(X_arm, iv_arm, vn, a.nmin, d, step0=False)
-            screen_runs.append(r1)
-            if "aborted" in r1:
-                print(f"  [screen d={d}] ABORTED: {r1['aborted']} "
-                      f"(n_envs={r1.get('n_envs')})", flush=True)
-            else:
-                print(f"  [screen d={d}] mean_ratio_pairs="
-                      f"{r1['mean_ratio_pairs']:.3f}  "
-                      f"coef_ratio_pairs={r1['coef_ratio_pairs']:.3f}  "
-                      f"n_envs={r1['n_envs']}", flush=True)
-
-        gate_vals = [r["mean_ratio_pairs"] for r in step0_runs
-                     if "mean_ratio_pairs" in r]
-        gate_pass = (all(0.9 <= x <= 1.1 for x in gate_vals)
-                     if gate_vals else False)
-        prim = next((r for r in screen_runs
-                     if r.get("d") == D_SET[0] and "aborted" not in r), None)
-
-        arms_out[arm] = dict(
-            n_cells=n_arm,
-            n_control_cells=n_ctrl_arm,
-            n_targets_total=int((us != CTRL_LABEL).sum()),
-            n_targets_surviving_nmin=len(surviving),
-            surviving_targets=[g for g, _ in surviving],
-            step0_gate=step0_runs,
-            screen=screen_runs,
-            summary=dict(
-                nmin=a.nmin, d=D_SET[0],
-                step0_gate_metric="mean_ratio_pairs",
-                step0_pairs=gate_vals,
-                step0_pass=gate_pass,
-                n_envs=prim.get("n_envs") if prim else None,
-                mean_ratio_pairs=prim.get("mean_ratio_pairs") if prim else None,
-                coef_ratio_pairs=prim.get("coef_ratio_pairs") if prim else None,
-                aborted=None if prim else "no_valid_screen_run",
-            ),
-        )
+    # Preserve prior single-seed shape when only seed 0 is run without
+    # --no-drop, so old consumers keep working.
+    single_shape = (len(seeds) == 1 and seeds[0] == 0 and not a.no_drop)
 
     out = dict(
         dataset="frangieh",
         source_metadata=str(META_CSV),
         source_expression=str(EXPR_CSV),
-        seed=SEED,
+        seeds=seeds,
+        no_drop=bool(a.no_drop),
         nmin=a.nmin,
         d_set=list(D_SET),
         primary_metric="mean_ratio_pairs",
         per_arm=True,
         **meta,
-        arms=arms_out,
+        per_seed=per_seed,
     )
+    if single_shape:
+        out["seed"] = seeds[0]
+        out["arms"] = per_seed[str(seeds[0])]
     atomic_write_json(out_path, out)
 
     # ------------------------------------------------------------- summary
     print("\n" + "=" * 78, flush=True)
-    print("FRANGIEH SUMMARY -- primary metric: mean_ratio_pairs", flush=True)
+    print(f"FRANGIEH SEED SWEEP -- primary metric: mean_ratio_pairs   "
+          f"(no_drop={a.no_drop})", flush=True)
     print("=" * 78, flush=True)
-    print(f"  {'arm':<12}{'cells':>9}{'ctrl':>8}{'targets':>9}"
-          f"{'>=NMIN':>8}{'envs':>7}{'gate':>8}{'pairs':>9}")
+    header = (f"  {'arm':<12}"
+              + "".join(f"{'seed ' + str(s):>12}" for s in seeds)
+              + f"{'mean':>10}{'sd':>8}")
+    print(header)
     for arm in ARMS:
-        A = arms_out.get(arm, {})
-        s = A.get("summary", {})
-        gate = ("PASS" if s.get("step0_pass") else "FAIL") if s else "-"
-        mrp = s.get("mean_ratio_pairs")
-        print(f"  {arm:<12}{A.get('n_cells', 0):>9}"
-              f"{A.get('n_control_cells', 0):>8}"
-              f"{A.get('n_targets_total', 0):>9}"
-              f"{A.get('n_targets_surviving_nmin', 0):>8}"
-              f"{str(s.get('n_envs', '-')):>7}"
-              f"{gate:>8}"
-              f"{(f'{mrp:.3f}' if mrp is not None else 'ABORT'):>9}")
+        vals_pair = []
+        vals_gate = []
+        for s in seeds:
+            A = per_seed[str(s)].get(arm, {})
+            sm = A.get("summary", {})
+            v = sm.get("mean_ratio_pairs")
+            g = sm.get("step0_pairs")
+            vals_pair.append(v)
+            vals_gate.append(g)
+        mean_val = float(np.mean([v for v in vals_pair if v is not None]))
+        sd_val = float(np.std([v for v in vals_pair if v is not None]))
+        row = f"  {arm:<12}"
+        for v in vals_pair:
+            row += f"{(f'{v:.3f}' if v is not None else 'ABORT'):>12}"
+        row += f"{mean_val:>10.3f}{sd_val:>8.3f}"
+        print(row)
     print()
-    print(f"  NMIN={a.nmin}, d={D_SET[0]}, seed={SEED}, per-arm bases")
+    print(f"  step-0 gate (per seed, per arm):")
+    for arm in ARMS:
+        for s in seeds:
+            A = per_seed[str(s)].get(arm, {})
+            gate = A.get("summary", {}).get("step0_pairs", [])
+            print(f"    seed {s}  {arm:<12}  step0_pairs={gate}")
+    print()
+    print(f"  NMIN={a.nmin}, d={D_SET[0]}, seeds={seeds}, "
+          f"no_drop={a.no_drop}, per-arm bases")
     print(f"  targets present as expression columns: "
           f"{meta['n_targets_in_expression_columns']}/"
           f"{meta['n_unique_targets']}  "
           f"(drop is {'NO-OP' if meta['target_column_drop_is_noop'] else 'LIVE'})")
-    aborted = [a_ for a_ in ARMS
-               if arms_out.get(a_, {}).get("summary", {}).get("aborted")]
-    if aborted:
-        print(f"  ABORTED ARMS: {aborted}")
     print(f"\n[write] {out_path}", flush=True)
 
 
