@@ -42,9 +42,13 @@ from pathlib import Path
 
 import numpy as np
 
-CAUSALBENCH = Path("/workspace/meridian-identifiability/causalbench")
-SCREEN_DIR = CAUSALBENCH / "results/screen"
-FRANGIEH_SCRIPT = CAUSALBENCH / "scripts/41_screen_frangieh.py"
+# 41_screen_frangieh.py lives next to this script (in the framework tree);
+# 03_screen.py lives in the separate causalbench source tree and is loaded
+# by 41 via its own hardcoded path. So we resolve 41 relative to __file__,
+# not to any hardcoded tree root.
+SCRIPTS_DIR = Path(__file__).resolve().parent
+FRANGIEH_SCRIPT = SCRIPTS_DIR / "41_screen_frangieh.py"
+# Results dir: 41 also writes here, so we use its constant post-import.
 
 
 def _load_module(path, name):
@@ -65,6 +69,7 @@ CTRL_LABEL = FR.CTRL_LABEL
 EXPR_CSV = FR.EXPR_CSV
 META_CSV = FR.META_CSV
 SEED = FR.SEED
+SCREEN_DIR = FR.SCREEN_DIR
 
 
 def build_arm_chunk_iv(iv_all, cond_all, nmin, seed):
