@@ -72,7 +72,7 @@ SEED = FR.SEED
 SCREEN_DIR = FR.SCREEN_DIR
 
 
-def build_arm_chunk_iv(iv_all, cond_all, nmin, seed):
+def build_arm_chunk_iv(iv_all, cond_all, nmin, seed, chunks_per_arm=None):
     """Return a new iv array where:
       - cells originally labeled non-targeting (basis cells) stay as
         CTRL_LABEL. They are pooled across arms and used ONLY for the
@@ -81,6 +81,22 @@ def build_arm_chunk_iv(iv_all, cond_all, nmin, seed):
         that arm's cells into NMIN-size pseudo-envs.
       - leftover cells that do not complete an NMIN chunk get label
         "excluded" (screen_run's excluded-name path).
+
+    chunks_per_arm caps how many pseudo-envs each arm contributes.
+
+    WHY THE CAP MATTERS. `screen_run` samples random env PAIRS. A pair drawn
+    from the SAME arm has Delta = 0 and contributes pure noise; only
+    CROSS-arm pairs carry the arm effect this control is meant to measure.
+    Because the ratio is a MEDIAN over pairs, a large within-arm fraction
+    drags the median toward the null and ATTENUATES the positive control.
+
+    Uncapped at NMIN=100 the split is 1113 chunks (407/267/439) giving
+    P(within-arm) = 0.347. Capping at 2 per arm gives 6 envs and
+    P(within-arm) = 0.200, which is closer to the per-target screens where
+    essentially every pair is a genuine cross-perturbation contrast. Neither
+    reaches 0 because only 3 arms exist and `screen_run` aborts below 4
+    environments. Both configurations are therefore run and reported, with
+    the within-arm fraction stated, rather than picking one silently.
     """
     rng = np.random.default_rng(seed)
     iv_new = np.array(iv_all, dtype=object).copy()
@@ -90,12 +106,32 @@ def build_arm_chunk_iv(iv_all, cond_all, nmin, seed):
         arm_idx = np.where(arm_mask)[0]
         rng.shuffle(arm_idx)
         n_chunks = len(arm_idx) // nmin
+        if chunks_per_arm is not None:
+            n_chunks = min(n_chunks, int(chunks_per_arm))
         for i in range(n_chunks):
             chunk_rows = arm_idx[i * nmin:(i + 1) * nmin]
             iv_new[chunk_rows] = f"{arm}_chunk_{i:04d}"
         leftover = arm_idx[n_chunks * nmin:]
         iv_new[leftover] = "excluded"
     return iv_new
+
+
+def within_arm_pair_fraction(iv_pos):
+    """Fraction of distinct env pairs that fall inside one arm (Delta = 0).
+    Reported so the attenuation of the positive control is explicit.
+    """
+    labels = [g for g in np.unique(iv_pos)
+              if g not in (CTRL_LABEL, "excluded")]
+    per_arm = {}
+    for g in labels:
+        arm = g.rsplit("_chunk_", 1)[0]
+        per_arm[arm] = per_arm.get(arm, 0) + 1
+    n = sum(per_arm.values())
+    if n < 2:
+        return None
+    total = n * (n - 1) // 2
+    within = sum(k * (k - 1) // 2 for k in per_arm.values())
+    return float(within / total)
 
 
 def atomic_write_json(path, obj):
@@ -156,78 +192,102 @@ def main():
     seeds = tuple(int(x) for x in a.seeds.split(","))
     print(f"\n[config] rungs={rungs}  seeds={seeds}  d={a.d}", flush=True)
 
+    def _stats(runs, field):
+        vals = [r[field] for r in runs if r.get(field) is not None]
+        if not vals:
+            return None, None, None
+        m, s = float(np.mean(vals)), float(np.std(vals))
+        ci = None
+        if len(vals) > 1:
+            se = s / np.sqrt(len(vals))
+            ci = [float(m - 1.96 * se), float(m + 1.96 * se)]
+        return m, s, ci
+
+    # Two chunk configurations. `capped` keeps the within-arm (Delta = 0)
+    # pair fraction low so the arm effect is not attenuated by null pairs;
+    # `all` uses every cell. Both reported.
+    chunk_configs = [("capped2", 2), ("all", None)]
+
     per_rung = {}
     for nmin in rungs:
-        print(f"\n{'-' * 70}\nNMIN={nmin}\n{'-' * 70}", flush=True)
-        iv_pos = build_arm_chunk_iv(iv_orig, cond_all, nmin, a.seed)
-        us, cs = np.unique(iv_pos, return_counts=True)
-        per_arm_chunk_counts = {
-            arm: int(sum(1 for g in us if g.startswith(f"{arm}_chunk_")))
-            for arm in ARMS}
-        n_ctrl = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
-        n_excl = int(cs[us == "excluded"].sum()) if "excluded" in us else 0
-        n_env_labels = int(sum(1 for g in us
-                                if g not in (CTRL_LABEL, "excluded")))
-        print(f"[env] pseudo-envs per arm: {per_arm_chunk_counts}   "
-              f"total envs={n_env_labels}", flush=True)
-        print(f"[env] basis cells (non-targeting pooled): {n_ctrl}   "
-              f"excluded leftover: {n_excl}", flush=True)
+        for cfg_name, cpa in chunk_configs:
+            key = f"{nmin}:{cfg_name}"
+            print(f"\n{'-' * 70}\nNMIN={nmin}  chunks_per_arm={cpa or 'all'}"
+                  f"\n{'-' * 70}", flush=True)
+            iv_ref = build_arm_chunk_iv(iv_orig, cond_all, nmin, a.seed,
+                                         chunks_per_arm=cpa)
+            us, cs = np.unique(iv_ref, return_counts=True)
+            per_arm_chunk_counts = {
+                arm: int(sum(1 for g in us if g.startswith(f"{arm}_chunk_")))
+                for arm in ARMS}
+            n_ctrl = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
+            n_excl = int(cs[us == "excluded"].sum()) if "excluded" in us else 0
+            n_env_labels = int(sum(1 for g in us
+                                    if g not in (CTRL_LABEL, "excluded")))
+            wa_frac = within_arm_pair_fraction(iv_ref)
+            print(f"[env] pseudo-envs per arm: {per_arm_chunk_counts}   "
+                  f"total envs={n_env_labels}", flush=True)
+            print(f"[env] within-arm pair fraction (Delta=0, attenuates): "
+                  f"{wa_frac if wa_frac is None else round(wa_frac, 3)}",
+                  flush=True)
+            print(f"[env] basis cells: {n_ctrl}   excluded: {n_excl}",
+                  flush=True)
 
-        gate_runs, pos_runs = [], []
-        for seed in seeds:
-            iv_s = build_arm_chunk_iv(iv_orig, cond_all, nmin, seed)
-            g = screen_run(X, iv_s, vn, nmin, a.d, step0=True,
-                            seed=seed, no_drop=False)
-            p = screen_run(X, iv_s, vn, nmin, a.d, step0=False,
-                            seed=seed, no_drop=False)
-            g["c_hat"] = c_hat_of(g, nmin)
-            p["c_hat"] = c_hat_of(p, nmin)
-            gate_runs.append(g)
-            pos_runs.append(p)
+            gate_runs, pos_runs = [], []
+            for seed in seeds:
+                iv_s = build_arm_chunk_iv(iv_orig, cond_all, nmin, seed,
+                                           chunks_per_arm=cpa)
+                g = screen_run(X, iv_s, vn, nmin, a.d, step0=True,
+                                seed=seed, no_drop=False)
+                p = screen_run(X, iv_s, vn, nmin, a.d, step0=False,
+                                seed=seed, no_drop=False)
+                g["c_hat"] = c_hat_of(g, nmin)
+                p["c_hat"] = c_hat_of(p, nmin)
+                gate_runs.append(g)
+                pos_runs.append(p)
 
-        def _stats(runs, field):
-            vals = [r[field] for r in runs
-                    if r.get(field) is not None]
-            if not vals:
-                return None, None, None
-            m, s = float(np.mean(vals)), float(np.std(vals))
-            ci = None
-            if len(vals) > 1:
-                se = s / np.sqrt(len(vals))
-                ci = [float(m - 1.96 * se), float(m + 1.96 * se)]
-            return m, s, ci
+            g_r, g_r_sd, g_r_ci = _stats(gate_runs, "mean_ratio_pairs")
+            g_c, g_c_sd, g_c_ci = _stats(gate_runs, "c_hat")
+            p_r, p_r_sd, p_r_ci = _stats(pos_runs, "mean_ratio_pairs")
+            p_c, p_c_sd, p_c_ci = _stats(pos_runs, "c_hat")
 
-        g_r, g_r_sd, g_r_ci = _stats(gate_runs, "mean_ratio_pairs")
-        g_c, g_c_sd, g_c_ci = _stats(gate_runs, "c_hat")
-        p_r, p_r_sd, p_r_ci = _stats(pos_runs, "mean_ratio_pairs")
-        p_c, p_c_sd, p_c_ci = _stats(pos_runs, "c_hat")
+            print(f"[step0]      ratio="
+                  f"{g_r if g_r is None else round(g_r, 4)}"
+                  f" +/- {g_r_sd if g_r_sd is None else round(g_r_sd, 4)}   "
+                  f"c_hat={g_c if g_c is None else format(g_c, '.4e')}",
+                  flush=True)
+            print(f"[poscontrol] ratio="
+                  f"{p_r if p_r is None else round(p_r, 4)}"
+                  f" +/- {p_r_sd if p_r_sd is None else round(p_r_sd, 4)}   "
+                  f"c_hat={p_c if p_c is None else format(p_c, '.4e')}",
+                  flush=True)
 
-        print(f"[step0]      ratio={g_r if g_r is None else round(g_r,4)}"
-              f" +/- {g_r_sd if g_r_sd is None else round(g_r_sd,4)}   "
-              f"c_hat={g_c if g_c is None else format(g_c,'.4e')}", flush=True)
-        print(f"[poscontrol] ratio={p_r if p_r is None else round(p_r,4)}"
-              f" +/- {p_r_sd if p_r_sd is None else round(p_r_sd,4)}   "
-              f"c_hat={p_c if p_c is None else format(p_c,'.4e')}", flush=True)
+            per_rung[key] = dict(
+                nmin=int(nmin), chunks_per_arm=cpa, config=cfg_name,
+                arm_chunk_counts=per_arm_chunk_counts,
+                within_arm_pair_fraction=wa_frac,
+                n_basis_cells=n_ctrl, n_excluded_leftover=n_excl,
+                n_environments=n_env_labels,
+                step0=dict(runs=gate_runs, ratio_mean=g_r, ratio_sd=g_r_sd,
+                           ratio_ci95=g_r_ci, c_hat_mean=g_c,
+                           c_hat_sd=g_c_sd, c_hat_ci95=g_c_ci),
+                poscontrol=dict(runs=pos_runs, ratio_mean=p_r,
+                                ratio_sd=p_r_sd, ratio_ci95=p_r_ci,
+                                c_hat_mean=p_c, c_hat_sd=p_c_sd,
+                                c_hat_ci95=p_c_ci),
+            )
 
-        per_rung[str(nmin)] = dict(
-            nmin=int(nmin),
-            arm_chunk_counts=per_arm_chunk_counts,
-            n_basis_cells=n_ctrl, n_excluded_leftover=n_excl,
-            n_environments=n_env_labels,
-            step0=dict(runs=gate_runs, ratio_mean=g_r, ratio_sd=g_r_sd,
-                       ratio_ci95=g_r_ci, c_hat_mean=g_c, c_hat_sd=g_c_sd,
-                       c_hat_ci95=g_c_ci),
-            poscontrol=dict(runs=pos_runs, ratio_mean=p_r, ratio_sd=p_r_sd,
-                            ratio_ci95=p_r_ci, c_hat_mean=p_c,
-                            c_hat_sd=p_c_sd, c_hat_ci95=p_c_ci),
-        )
-
-    # c_hat n-invariance on the positive control itself.
-    pc_vals = [per_rung[str(n)]["poscontrol"]["c_hat_mean"] for n in rungs
-               if per_rung.get(str(n), {}).get("poscontrol", {})
-               .get("c_hat_mean") is not None]
-    c_hat_cv = (float(np.std(pc_vals) / np.mean(pc_vals))
-                if len(pc_vals) > 1 and np.mean(pc_vals) > 0 else None)
+    # c_hat n-invariance on the positive control, within each chunk config.
+    c_hat_cv_by_config = {}
+    for cfg_name, _ in chunk_configs:
+        vals = [per_rung[f"{n}:{cfg_name}"]["poscontrol"]["c_hat_mean"]
+                for n in rungs
+                if per_rung.get(f"{n}:{cfg_name}", {})
+                .get("poscontrol", {}).get("c_hat_mean") is not None]
+        c_hat_cv_by_config[cfg_name] = (
+            float(np.std(vals) / np.mean(vals))
+            if len(vals) > 1 and np.mean(vals) > 0 else None)
+    c_hat_cv = c_hat_cv_by_config.get("capped2")
 
     # Reference values from 48_nmin_ladder_all.py (per-TARGET screens).
     PER_TARGET_C_HAT = {"k562": 9.33e-02, "norman": 6.51e-02, "rpe1": 1.45e-02,
@@ -235,8 +295,11 @@ def main():
                         "frangieh:IFNg": 1.80e-03,
                         "frangieh:Control": "NOT_ESTIMABLE"}
 
-    ref_r = per_rung[str(rungs[0])]["poscontrol"]["ratio_mean"]
-    ref_c = per_rung[str(rungs[0])]["poscontrol"]["c_hat_mean"]
+    # Reference = the capped config at the first rung: lowest within-arm
+    # (Delta = 0) pair fraction, so least attenuated.
+    REF_KEY = f"{rungs[0]}:capped2"
+    ref_r = per_rung[REF_KEY]["poscontrol"]["ratio_mean"]
+    ref_c = per_rung[REF_KEY]["poscontrol"]["c_hat_mean"]
     verdict = "PIPELINE_BROKEN"
     if ref_r is not None:
         if ref_r >= 1.5:
@@ -255,6 +318,10 @@ def main():
         env_label_source="arm-chunk pseudo-envs of NMIN cells each",
         per_rung=per_rung,
         c_hat_cv_across_rungs=c_hat_cv,
+        c_hat_cv_by_config=c_hat_cv_by_config,
+        reference_config=REF_KEY,
+        chunk_configs=[dict(name=n, chunks_per_arm=c)
+                       for n, c in chunk_configs],
         c_hat_note=("c_hat is proportional to ||Delta||^2/tr(Sigma) with "
                      "constant ~1/3.5 (not 1/4) because the estimator uses a "
                      "median of norms over heterogeneous pairs. NEAR-invariant "
@@ -281,8 +348,6 @@ def main():
         **meta,
     )
     atomic_write_json(out_path, out)
-    r_step0 = per_rung[str(rungs[0])]["step0"]
-    r_pos = per_rung[str(rungs[0])]["poscontrol"]
 
     print("\n" + "=" * 78, flush=True)
     print("FRANGIEH POSITIVE CONTROL (CONTROL ONLY, never report as result)",
@@ -293,25 +358,37 @@ def main():
             return "ABORT"
         return format(v, ".4e") if e else f"{v:.4f}"
 
-    print(f"  {'rung':<8}{'step0 ratio':>16}{'step0 c_hat':>14}"
-          f"{'POS ratio':>16}{'POS c_hat':>14}{'envs':>7}")
+    print(f"  {'rung':<6}{'cfg':<9}{'envs':>6}{'wArm':>7}"
+          f"{'step0 ratio':>14}{'step0 c_hat':>14}"
+          f"{'POS ratio':>14}{'POS c_hat':>14}")
     for n in rungs:
-        R = per_rung[str(n)]
-        g, p = R["step0"], R["poscontrol"]
-        print(f"  n={n:<6}"
-              f"{_fmt(g['ratio_mean']):>10}+-{_fmt(g['ratio_sd'])[:5]:<5}"
-              f"{_fmt(g['c_hat_mean'], True):>14}"
-              f"{_fmt(p['ratio_mean']):>10}+-{_fmt(p['ratio_sd'])[:5]:<5}"
-              f"{_fmt(p['c_hat_mean'], True):>14}"
-              f"{R['n_environments']:>7}")
+        for cfg_name, _ in chunk_configs:
+            R = per_rung[f"{n}:{cfg_name}"]
+            g, p = R["step0"], R["poscontrol"]
+            wa = R.get("within_arm_pair_fraction")
+            print(f"  {n:<6}{cfg_name:<9}{R['n_environments']:>6}"
+                  f"{('-' if wa is None else f'{wa:.3f}'):>7}"
+                  f"{_fmt(g['ratio_mean']):>14}"
+                  f"{_fmt(g['c_hat_mean'], True):>14}"
+                  f"{_fmt(p['ratio_mean']):>14}"
+                  f"{_fmt(p['c_hat_mean'], True):>14}")
+    print("\n  seed-level 95% CIs on POS c_hat (this IS the error bar):")
     for n in rungs:
-        p = per_rung[str(n)]["poscontrol"]
-        if p.get("c_hat_ci95"):
-            print(f"    n={n} POS c_hat 95% CI (seed-level): "
-                  f"[{p['c_hat_ci95'][0]:.4e}, {p['c_hat_ci95'][1]:.4e}]")
-    if c_hat_cv is not None:
-        print(f"\n  c_hat CV across rungs (n-invariance diagnostic, "
-              f"NOT an error bar): {c_hat_cv * 100:.1f}%")
+        for cfg_name, _ in chunk_configs:
+            p = per_rung[f"{n}:{cfg_name}"]["poscontrol"]
+            if p.get("c_hat_ci95"):
+                print(f"    n={n:<5} {cfg_name:<9} "
+                      f"[{p['c_hat_ci95'][0]:.4e}, {p['c_hat_ci95'][1]:.4e}]")
+    print("\n  c_hat CV across rungs (n-invariance diagnostic, NOT an "
+          "error bar):")
+    for cfg_name, cv in c_hat_cv_by_config.items():
+        print(f"    {cfg_name:<9} "
+              f"{'-' if cv is None else f'{cv * 100:.1f}%'}")
+    print(f"\n  NOTE: 'wArm' is the fraction of env pairs drawn from the SAME "
+          f"arm.\n        Those have Delta=0 and ATTENUATE the control. "
+          f"'capped2' is the\n        reference config because it minimises "
+          f"this; 3 arms cannot reach 0\n        without tripping the >=4 env "
+          f"abort in screen_run().")
 
     print(f"\n  CALIBRATION -- arm effect vs per-target c_hat "
           f"(from 48_nmin_ladder_all.py):")
