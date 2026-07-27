@@ -437,6 +437,57 @@ their `MMD_loss` call site, not from a defaults block.
 
 Ordered by severity. Machine-readable copy: `paper/crosscheck_findings.json`.
 
+### D16 — The Frangieh screen is POST-HOC, not pre-registered (CRITICAL)
+
+`causalbench/PREDICTIONS_frangieh.md` was committed to establish the Frangieh
+test as prospective. It does not do so, on two independent grounds.
+
+**1. The lockfile contains no predictions.** It holds **16 `TODO` placeholders**
+and was never edited after registration (single commit `8722c84`, no follow-ups).
+Every prediction field is empty:
+
+```
+- Co-culture: TODO (low – high)
+- Control: TODO (low – high)
+- IFNγ: TODO (low – high)
+- Predicted sign: TODO (+ / − / near zero)
+- Co-culture surviving envs: TODO
+```
+
+A registration containing no registered prediction carries no prospective
+weight, regardless of its timestamp.
+
+**2. Results for two of three arms existed before registration.** Normalised to
+UTC:
+
+| event | commit | UTC |
+|---|---|---|
+| Frangieh script added | `9230b16` | 2026-07-24 17:28Z |
+| IFNγ label fix committed | `4fab4f4` | 2026-07-25 **08:09Z** |
+| `PREDICTIONS_frangieh.md` registered | `8722c84` | 2026-07-25 **10:58Z** |
+| `frangieh.json` produced (mtime) | — | 2026-07-25 **11:36Z** |
+
+The IFNγ fix at 08:09Z was made *because* an earlier run had silently dropped
+the IFNγ arm (76913 cells retained instead of 126966, an ASCII `IFNg` vs Greek
+`IFNγ` U+03B3 label mismatch). That run necessarily produced `mean_ratio_pairs`
+for Co-culture and Control. Those two values were therefore visible **2h49m
+before** the lockfile was committed. Registration preceded the *final* results
+file by 38 minutes, but not the *first* results.
+
+**Consequence.** The Frangieh result must be written as a post-hoc observation.
+No prospective-validity claim can be attached to it. Proposed limitations text:
+
+> The Frangieh screen was not pre-registered. A predictions file was committed
+> before the final results were written, but it contained no filled-in
+> predictions, and an earlier run of the same screen had already produced values
+> for two of the three arms. We report the Frangieh result as an observation and
+> do not claim prospective validity for it.
+
+**Recovery.** Adamson (GSE90546) is genuinely unrun. A lockfile with predictions
+actually filled in, committed before that run, would be prospective. This is the
+one remaining opportunity to make a prospective claim in this paper and it
+should not be spent carelessly.
+
 ### D13 — RPE1 clears the workability threshold on the primary metric (CRITICAL)
 
 RPE1 is claimed as one of the two **correctly-flagged negatives** underpinning

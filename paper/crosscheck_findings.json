@@ -1,5 +1,14 @@
 [
   {
+    "kind": "PROVENANCE",
+    "label": "Frangieh screen is post-hoc, not pre-registered",
+    "claimed": "prospective (PREDICTIONS_frangieh.md registered before results)",
+    "actual": "post-hoc: lockfile holds 16 unfilled TODOs and was never edited; results for 2 of 3 arms existed 2h49m before registration",
+    "claim_src": "causalbench/PREDICTIONS_frangieh.md (commit 8722c84, 2026-07-25T10:58:59Z)",
+    "actual_src": "git log --diff-filter=A -- causalbench/PREDICTIONS_frangieh.md; commit 4fab4f4 (IFNg label fix) 2026-07-25T08:09:53Z; frangieh.json mtime 2026-07-25T11:36Z",
+    "note": "Two independent grounds. (1) The lockfile contains no filled-in predictions, so its timestamp is moot. (2) The IFNg fix at 08:09Z implies a prior run that produced Co-culture and Control ratios before the 10:58Z registration. Frangieh must be reported as an observation with no prospective-validity claim. Adamson (GSE90546) is unrun and is the remaining opportunity for a genuine pre-registration."
+  },
+  {
     "kind": "METRIC-MISMATCH",
     "label": "README Norman mean-shift ratio",
     "claimed": "3.19",
