@@ -109,9 +109,15 @@ def atomic_write_json(path, obj):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hvg", type=int, default=None)
-    ap.add_argument("--nmin", type=int, default=100)
+    ap.add_argument("--nmin", type=int, default=100,
+                    help="(legacy, ignored; use --rungs)")
+    ap.add_argument("--rungs", default="100,200",
+                    help="comma-separated NMIN rungs; c_hat n-invariance is "
+                         "checked across these on the positive control too")
+    ap.add_argument("--seeds", default="0,1,2,3,4")
     ap.add_argument("--d", type=int, default=10)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seed used for the reported env-chunk layout")
     ap.add_argument("--out", default=str(
         SCREEN_DIR / "frangieh_poscontrol.json"))
     a = ap.parse_args()
@@ -132,68 +138,136 @@ def main():
     cond_all = md["condition"].to_numpy().astype(str)
     print(f"[align] {X.shape[0]} cells aligned", flush=True)
 
-    iv_pos = build_arm_chunk_iv(iv_orig, cond_all, a.nmin, a.seed)
-    us, cs = np.unique(iv_pos, return_counts=True)
-    per_arm_chunk_counts = {}
-    for arm in ARMS:
-        n_chunks = int(sum(1 for g in us if g.startswith(f"{arm}_chunk_")))
-        per_arm_chunk_counts[arm] = n_chunks
-    n_ctrl = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
-    n_excl = int(cs[us == "excluded"].sum()) if "excluded" in us else 0
-    n_env_labels = int(sum(1 for g in us
-                            if g not in (CTRL_LABEL, "excluded")))
-    print(f"[env] pseudo-envs per arm: {per_arm_chunk_counts}   "
-          f"total envs={n_env_labels}", flush=True)
-    print(f"[env] basis cells (non-targeting pooled): {n_ctrl}   "
-          f"excluded (leftover): {n_excl}", flush=True)
+    def c_hat_of(rec, nmin):
+        """c_hat = (ratio^2 - 1)/NMIN. Proportional to ||Delta||^2/tr(Sigma),
+        the squared standardized between-environment separation per cell.
+        Constant of proportionality is ~1/3.5 rather than the 1/4 the
+        expectation algebra gives, because 03_screen.py:111 takes a MEDIAN OF
+        NORMS over heterogeneous pairs rather than an RMS. Verified against
+        the code path with known Delta and Sigma; scales exactly as
+        (tau/sigma)^2. Near-invariant in NMIN, not an exact identity.
+        """
+        if "mean_ratio_pairs" not in rec:
+            return None
+        r = rec["mean_ratio_pairs"]
+        return float(max(r * r - 1.0, 0.0) / nmin)
 
-    # STEP-0 (should return ~1.0 on control pseudo-envs) and POSCONTROL
-    # (should return >> 1 if the pipeline is intact).
-    print("\n[step0] control pseudo-envs from the basis pool", flush=True)
-    r_step0 = screen_run(X, iv_pos, vn, a.nmin, a.d, step0=True,
-                          seed=a.seed, no_drop=False)
-    if "aborted" in r_step0:
-        print(f"[step0] ABORTED: {r_step0['aborted']}", flush=True)
-    else:
-        print(f"[step0] mean_ratio_pairs={r_step0['mean_ratio_pairs']:.3f}  "
-              f"n_envs={r_step0['n_envs']}", flush=True)
+    rungs = tuple(int(x) for x in a.rungs.split(","))
+    seeds = tuple(int(x) for x in a.seeds.split(","))
+    print(f"\n[config] rungs={rungs}  seeds={seeds}  d={a.d}", flush=True)
 
-    print("\n[poscontrol] arm-chunk pseudo-envs (CONTROL ONLY)", flush=True)
-    r_pos = screen_run(X, iv_pos, vn, a.nmin, a.d, step0=False,
-                        seed=a.seed, no_drop=False)
-    if "aborted" in r_pos:
-        print(f"[poscontrol] ABORTED: {r_pos['aborted']}", flush=True)
-    else:
-        print(f"[poscontrol] mean_ratio_pairs={r_pos['mean_ratio_pairs']:.3f}"
-              f"  coef_ratio_pairs={r_pos['coef_ratio_pairs']:.3f}"
-              f"  n_envs={r_pos['n_envs']}", flush=True)
+    per_rung = {}
+    for nmin in rungs:
+        print(f"\n{'-' * 70}\nNMIN={nmin}\n{'-' * 70}", flush=True)
+        iv_pos = build_arm_chunk_iv(iv_orig, cond_all, nmin, a.seed)
+        us, cs = np.unique(iv_pos, return_counts=True)
+        per_arm_chunk_counts = {
+            arm: int(sum(1 for g in us if g.startswith(f"{arm}_chunk_")))
+            for arm in ARMS}
+        n_ctrl = int(cs[us == CTRL_LABEL].sum()) if CTRL_LABEL in us else 0
+        n_excl = int(cs[us == "excluded"].sum()) if "excluded" in us else 0
+        n_env_labels = int(sum(1 for g in us
+                                if g not in (CTRL_LABEL, "excluded")))
+        print(f"[env] pseudo-envs per arm: {per_arm_chunk_counts}   "
+              f"total envs={n_env_labels}", flush=True)
+        print(f"[env] basis cells (non-targeting pooled): {n_ctrl}   "
+              f"excluded leftover: {n_excl}", flush=True)
 
-    # Verdict
+        gate_runs, pos_runs = [], []
+        for seed in seeds:
+            iv_s = build_arm_chunk_iv(iv_orig, cond_all, nmin, seed)
+            g = screen_run(X, iv_s, vn, nmin, a.d, step0=True,
+                            seed=seed, no_drop=False)
+            p = screen_run(X, iv_s, vn, nmin, a.d, step0=False,
+                            seed=seed, no_drop=False)
+            g["c_hat"] = c_hat_of(g, nmin)
+            p["c_hat"] = c_hat_of(p, nmin)
+            gate_runs.append(g)
+            pos_runs.append(p)
+
+        def _stats(runs, field):
+            vals = [r[field] for r in runs
+                    if r.get(field) is not None]
+            if not vals:
+                return None, None, None
+            m, s = float(np.mean(vals)), float(np.std(vals))
+            ci = None
+            if len(vals) > 1:
+                se = s / np.sqrt(len(vals))
+                ci = [float(m - 1.96 * se), float(m + 1.96 * se)]
+            return m, s, ci
+
+        g_r, g_r_sd, g_r_ci = _stats(gate_runs, "mean_ratio_pairs")
+        g_c, g_c_sd, g_c_ci = _stats(gate_runs, "c_hat")
+        p_r, p_r_sd, p_r_ci = _stats(pos_runs, "mean_ratio_pairs")
+        p_c, p_c_sd, p_c_ci = _stats(pos_runs, "c_hat")
+
+        print(f"[step0]      ratio={g_r if g_r is None else round(g_r,4)}"
+              f" +/- {g_r_sd if g_r_sd is None else round(g_r_sd,4)}   "
+              f"c_hat={g_c if g_c is None else format(g_c,'.4e')}", flush=True)
+        print(f"[poscontrol] ratio={p_r if p_r is None else round(p_r,4)}"
+              f" +/- {p_r_sd if p_r_sd is None else round(p_r_sd,4)}   "
+              f"c_hat={p_c if p_c is None else format(p_c,'.4e')}", flush=True)
+
+        per_rung[str(nmin)] = dict(
+            nmin=int(nmin),
+            arm_chunk_counts=per_arm_chunk_counts,
+            n_basis_cells=n_ctrl, n_excluded_leftover=n_excl,
+            n_environments=n_env_labels,
+            step0=dict(runs=gate_runs, ratio_mean=g_r, ratio_sd=g_r_sd,
+                       ratio_ci95=g_r_ci, c_hat_mean=g_c, c_hat_sd=g_c_sd,
+                       c_hat_ci95=g_c_ci),
+            poscontrol=dict(runs=pos_runs, ratio_mean=p_r, ratio_sd=p_r_sd,
+                            ratio_ci95=p_r_ci, c_hat_mean=p_c,
+                            c_hat_sd=p_c_sd, c_hat_ci95=p_c_ci),
+        )
+
+    # c_hat n-invariance on the positive control itself.
+    pc_vals = [per_rung[str(n)]["poscontrol"]["c_hat_mean"] for n in rungs
+               if per_rung.get(str(n), {}).get("poscontrol", {})
+               .get("c_hat_mean") is not None]
+    c_hat_cv = (float(np.std(pc_vals) / np.mean(pc_vals))
+                if len(pc_vals) > 1 and np.mean(pc_vals) > 0 else None)
+
+    # Reference values from 48_nmin_ladder_all.py (per-TARGET screens).
+    PER_TARGET_C_HAT = {"k562": 9.33e-02, "norman": 6.51e-02, "rpe1": 1.45e-02,
+                        "frangieh:Co-culture": 2.19e-03,
+                        "frangieh:IFNg": 1.80e-03,
+                        "frangieh:Control": "NOT_ESTIMABLE"}
+
+    ref_r = per_rung[str(rungs[0])]["poscontrol"]["ratio_mean"]
+    ref_c = per_rung[str(rungs[0])]["poscontrol"]["c_hat_mean"]
     verdict = "PIPELINE_BROKEN"
-    if "mean_ratio_pairs" in r_pos:
-        v = r_pos["mean_ratio_pairs"]
-        if v >= 1.5:
+    if ref_r is not None:
+        if ref_r >= 1.5:
             verdict = "PIPELINE_INTACT_CLEAR"
-        elif v >= 1.2:
+        elif ref_r >= 1.2:
             verdict = "PIPELINE_INTACT_MARGINAL"
-        elif v >= 1.1:
+        elif ref_r >= 1.1:
             verdict = "PIPELINE_WEAK"
-        else:
-            verdict = "PIPELINE_BROKEN"
 
     out = dict(
         label="POSITIVE_CONTROL_ONLY",
         dataset="frangieh",
         source_metadata=str(META_CSV),
         source_expression=str(EXPR_CSV),
-        seed=int(a.seed), nmin=int(a.nmin), d=int(a.d),
+        seeds=list(seeds), rungs=list(rungs), d=int(a.d),
         env_label_source="arm-chunk pseudo-envs of NMIN cells each",
-        arm_chunk_counts=per_arm_chunk_counts,
-        n_basis_cells=int(n_ctrl),
-        n_excluded_leftover=int(n_excl),
-        n_environments=int(n_env_labels),
-        step0=r_step0,
-        poscontrol=r_pos,
+        per_rung=per_rung,
+        c_hat_cv_across_rungs=c_hat_cv,
+        c_hat_note=("c_hat is proportional to ||Delta||^2/tr(Sigma) with "
+                     "constant ~1/3.5 (not 1/4) because the estimator uses a "
+                     "median of norms over heterogeneous pairs. NEAR-invariant "
+                     "in NMIN, not an exact identity. CV across rungs is an "
+                     "n-invariance diagnostic, NOT a sampling error bar; use "
+                     "the seed-level ci95 fields for uncertainty."),
+        per_target_c_hat_reference=PER_TARGET_C_HAT,
+        calibration_reading=(
+            "The arm effect is large and published. Its c_hat on THIS loader "
+            "is the calibration reference that makes the per-target Frangieh "
+            "values (Co-culture 2.19e-03, IFNg 1.80e-03, Control NOT "
+            "ESTIMABLE) interpretable as genuinely small rather than merely "
+            "small-looking."),
         expected_ratio_note=("arms have well-known large transcriptional "
                               "differences (IFNγ vs Co-culture in particular); "
                               "a healthy pipeline is expected to give "
@@ -207,22 +281,51 @@ def main():
         **meta,
     )
     atomic_write_json(out_path, out)
+    r_step0 = per_rung[str(rungs[0])]["step0"]
+    r_pos = per_rung[str(rungs[0])]["poscontrol"]
 
     print("\n" + "=" * 78, flush=True)
     print("FRANGIEH POSITIVE CONTROL (CONTROL ONLY, never report as result)",
           flush=True)
     print("=" * 78, flush=True)
-    print(f"  step0 (control pseudo-envs): "
-          f"mean_ratio_pairs={r_step0.get('mean_ratio_pairs', 'ABORT')}")
-    if "mean_ratio_pairs" in r_pos:
-        print(f"  poscontrol (arm chunks):     "
-              f"mean_ratio_pairs={r_pos['mean_ratio_pairs']:.3f}")
-    else:
-        print(f"  poscontrol (arm chunks):     ABORT "
-              f"({r_pos.get('aborted')})")
-    print(f"  n_environments={n_env_labels}   "
-          f"per_arm_chunks={per_arm_chunk_counts}")
-    print(f"  VERDICT: {verdict}")
+    def _fmt(v, e=False):
+        if v is None:
+            return "ABORT"
+        return format(v, ".4e") if e else f"{v:.4f}"
+
+    print(f"  {'rung':<8}{'step0 ratio':>16}{'step0 c_hat':>14}"
+          f"{'POS ratio':>16}{'POS c_hat':>14}{'envs':>7}")
+    for n in rungs:
+        R = per_rung[str(n)]
+        g, p = R["step0"], R["poscontrol"]
+        print(f"  n={n:<6}"
+              f"{_fmt(g['ratio_mean']):>10}+-{_fmt(g['ratio_sd'])[:5]:<5}"
+              f"{_fmt(g['c_hat_mean'], True):>14}"
+              f"{_fmt(p['ratio_mean']):>10}+-{_fmt(p['ratio_sd'])[:5]:<5}"
+              f"{_fmt(p['c_hat_mean'], True):>14}"
+              f"{R['n_environments']:>7}")
+    for n in rungs:
+        p = per_rung[str(n)]["poscontrol"]
+        if p.get("c_hat_ci95"):
+            print(f"    n={n} POS c_hat 95% CI (seed-level): "
+                  f"[{p['c_hat_ci95'][0]:.4e}, {p['c_hat_ci95'][1]:.4e}]")
+    if c_hat_cv is not None:
+        print(f"\n  c_hat CV across rungs (n-invariance diagnostic, "
+              f"NOT an error bar): {c_hat_cv * 100:.1f}%")
+
+    print(f"\n  CALIBRATION -- arm effect vs per-target c_hat "
+          f"(from 48_nmin_ladder_all.py):")
+    if ref_c:
+        for k, v in PER_TARGET_C_HAT.items():
+            if isinstance(v, str):
+                print(f"    {k:<22} {v}")
+            else:
+                print(f"    {k:<22} {v:.3e}   "
+                      f"arm-effect is {ref_c / v:>7.1f}x larger")
+    print(f"\n  VERDICT: {verdict}")
+    if verdict == "PIPELINE_BROKEN":
+        print("  STOP -- the pipeline cannot detect a large published effect "
+              "on this loader. Every Frangieh number is void.")
     print(f"\n[write] {out_path}", flush=True)
 
 
