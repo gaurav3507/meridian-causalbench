@@ -1,0 +1,366 @@
+{
+  "lane": "ranktest",
+  "purpose": "Diagnostic for rank(Sigma_e - Sigma_0) <= 2, the second-order complement to the mean-shift screen in 03_screen.py. Not a replacement for it.",
+  "status": "STOPPED AT GATE 0. Gates 1 and 2 were NOT run.",
+  "interpretation_rule": {
+    "informative": "r_hat > 2 falsifies the assumption bundle",
+    "not_informative": "r_hat <= 2 is NOT evidence the bundle holds; covariance is mean-centred so a pure shift intervention gives r_hat = 0 trivially",
+    "relation_to_screen": "second-order complement to 03_screen.py, does not subsume it"
+  },
+  "environment": {
+    "python": "3.11.15",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "pandas": "3.0.3",
+    "sklearn": "1.9.0",
+    "interpreter": "/Users/gauravgoyal/Downloads/meridian/.venv/bin/python",
+    "note": "meridian-causalbench has no local venv; the meridian venv was used. Only numpy is imported by 80/81/82."
+  },
+  "screen_signatures_as_found": {
+    "fit_pca": "fit_pca(Xc, d) -> (mu, W); W is (D, d). NOT the (D,d)-only return the handoff assumed.",
+    "project": "project(X, mu, W, drop) -> (X - mu) @ W_with_drop_rows_zeroed. NOT X @ P.",
+    "source": "causalbench/scripts/03_screen.py:20 and :25",
+    "action": "names matched the handoff, so per its own stop-rule this was not a stop condition; call sites adapted, PCA imported and never reimplemented"
+  },
+  "deviations_from_handoff": [
+    "n_match: the handoff specifies both n_match=min(n_e, floor(n_p/2)) and a hard guard raising when n_p < 3*n_match. These contradict: whenever n_e is large the first gives n_match=floor(n_p/2) and the guard then fires on every run. Resolved in favour of the explicitly-stated hard guard: REF_SPLIT_FACTOR=3, so n_match=min(n_match_req, n_e, n_p//3). Conservative direction (smaller n, less power), so it cannot manufacture a false PASS.",
+    "Observation noise added to the simulator. X = A Z exactly is rank-deficient when d > d_latent, making the d=20 spectrum meaningless. The noise is drawn with the same sd in every environment so it cancels exactly from Sigma_e - Sigma_0; the rank-<=2 property is untouched.",
+    "drop= and null_band= added as keyword-only arguments to rank_diagnostic. The handoff's positional signature is unchanged. null_band is an arithmetic-identical cache; Gate 0 deliberately does NOT use it.",
+    "03_screen.py runs os.makedirs('/workspace/...') at module scope and cannot be imported off the A100. Only that side effect is neutralised during exec_module; no function body is touched."
+  ],
+  "gate0": {
+    "verdict": "FAIL",
+    "pass_criterion": "empirical r_hat>0 rate within 2 Monte-Carlo SE of alpha=0.05 on every seed and every d",
+    "config": {
+      "n_splits": 200,
+      "d_set": [
+        5,
+        10,
+        20
+      ],
+      "d_latent": 20,
+      "D": 200,
+      "n_env": 300,
+      "n_total": 3000,
+      "alpha": 0.05,
+      "B_null": 500,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "n_basis": 600,
+      "n_ref_pool": 1200,
+      "n_env_pool": 1200
+    },
+    "mc_band_2se": [
+      0.01917792998515512,
+      0.08082207001484489
+    ],
+    "diagnosis": "Per-eigenvalue marginals sit at alpha at every d and both scalings (observed range 0.034-0.060 vs alpha=0.05), so the estimator is implemented correctly. The failure is in the statistic's definition: r_hat = sum_j 1[lam_j > band_j] is d marginal level-alpha tests with no multiplicity control, so its null distribution is approximately Binomial(d, alpha), not a point mass at 0. P(r_hat>0) therefore tracks 1-(1-alpha)^d by construction and the Gate 0 criterion is unachievable for any d>1. Measured with a FRESH independent null band per split, so band reuse is excluded as the cause.",
+    "summary": [
+      {
+        "scaling": "raw",
+        "d": 5,
+        "fpr_gt0_per_seed": [
+          0.19,
+          0.195,
+          0.14,
+          0.18,
+          0.175,
+          0.195,
+          0.16,
+          0.31,
+          0.295,
+          0.155
+        ],
+        "fpr_gt0_median": 0.185,
+        "fpr_gt2_per_seed": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fpr_gt2_median": 0.0,
+        "marginal_per_j_mean": [
+          0.0505,
+          0.045500000000000006,
+          0.034499999999999996,
+          0.049,
+          0.0375
+        ],
+        "marginal_min": 0.034499999999999996,
+        "marginal_max": 0.0505,
+        "predicted_indep_gt0": 0.22621906250000023,
+        "all_seeds_in_band": false
+      },
+      {
+        "scaling": "raw",
+        "d": 10,
+        "fpr_gt0_per_seed": [
+          0.375,
+          0.34,
+          0.305,
+          0.34,
+          0.365,
+          0.39,
+          0.385,
+          0.48,
+          0.425,
+          0.33
+        ],
+        "fpr_gt0_median": 0.37,
+        "fpr_gt2_per_seed": [
+          0.0,
+          0.015,
+          0.015,
+          0.015,
+          0.005,
+          0.02,
+          0.01,
+          0.015,
+          0.015,
+          0.025
+        ],
+        "fpr_gt2_median": 0.015,
+        "marginal_per_j_mean": [
+          0.0505,
+          0.046000000000000006,
+          0.036,
+          0.047,
+          0.0395,
+          0.0485,
+          0.0495,
+          0.05500000000000001,
+          0.053000000000000005,
+          0.05
+        ],
+        "marginal_min": 0.036,
+        "marginal_max": 0.05500000000000001,
+        "predicted_indep_gt0": 0.4012630607616213,
+        "all_seeds_in_band": false
+      },
+      {
+        "scaling": "raw",
+        "d": 20,
+        "fpr_gt0_per_seed": [
+          0.64,
+          0.55,
+          0.605,
+          0.505,
+          0.605,
+          0.61,
+          0.67,
+          0.6,
+          0.575,
+          0.56
+        ],
+        "fpr_gt0_median": 0.6025,
+        "fpr_gt2_per_seed": [
+          0.095,
+          0.075,
+          0.12,
+          0.075,
+          0.11,
+          0.085,
+          0.16,
+          0.07,
+          0.075,
+          0.105
+        ],
+        "fpr_gt2_median": 0.09,
+        "marginal_per_j_mean": [
+          0.0505,
+          0.046000000000000006,
+          0.036,
+          0.045,
+          0.038,
+          0.049,
+          0.0505,
+          0.0485,
+          0.052000000000000005,
+          0.05799999999999998,
+          0.044,
+          0.0465,
+          0.0475,
+          0.05700000000000001,
+          0.05650000000000001,
+          0.05450000000000001,
+          0.05600000000000001,
+          0.049999999999999996,
+          0.05600000000000001,
+          0.05199999999999999
+        ],
+        "marginal_min": 0.036,
+        "marginal_max": 0.05799999999999998,
+        "predicted_indep_gt0": 0.6415140775914581,
+        "all_seeds_in_band": false
+      },
+      {
+        "scaling": "standardised",
+        "d": 5,
+        "fpr_gt0_per_seed": [
+          0.17,
+          0.17,
+          0.135,
+          0.21,
+          0.195,
+          0.21,
+          0.115,
+          0.36,
+          0.285,
+          0.155
+        ],
+        "fpr_gt0_median": 0.1825,
+        "fpr_gt2_per_seed": [
+          0.005,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.005,
+          0.0,
+          0.0,
+          0.01,
+          0.0
+        ],
+        "fpr_gt2_median": 0.0,
+        "marginal_per_j_mean": [
+          0.047499999999999994,
+          0.04650000000000001,
+          0.036000000000000004,
+          0.0465,
+          0.046
+        ],
+        "marginal_min": 0.036000000000000004,
+        "marginal_max": 0.047499999999999994,
+        "predicted_indep_gt0": 0.22621906250000023,
+        "all_seeds_in_band": false
+      },
+      {
+        "scaling": "standardised",
+        "d": 10,
+        "fpr_gt0_per_seed": [
+          0.325,
+          0.37,
+          0.35,
+          0.325,
+          0.32,
+          0.45,
+          0.325,
+          0.475,
+          0.39,
+          0.305
+        ],
+        "fpr_gt0_median": 0.3375,
+        "fpr_gt2_per_seed": [
+          0.02,
+          0.025,
+          0.025,
+          0.01,
+          0.015,
+          0.015,
+          0.015,
+          0.0,
+          0.015,
+          0.025
+        ],
+        "fpr_gt2_median": 0.015,
+        "marginal_per_j_mean": [
+          0.04699999999999999,
+          0.045500000000000006,
+          0.035500000000000004,
+          0.0475,
+          0.0405,
+          0.047,
+          0.045,
+          0.05449999999999999,
+          0.043,
+          0.052500000000000005
+        ],
+        "marginal_min": 0.035500000000000004,
+        "marginal_max": 0.05449999999999999,
+        "predicted_indep_gt0": 0.4012630607616213,
+        "all_seeds_in_band": false
+      },
+      {
+        "scaling": "standardised",
+        "d": 20,
+        "fpr_gt0_per_seed": [
+          0.61,
+          0.535,
+          0.54,
+          0.525,
+          0.635,
+          0.555,
+          0.58,
+          0.625,
+          0.6,
+          0.545
+        ],
+        "fpr_gt0_median": 0.5675,
+        "fpr_gt2_per_seed": [
+          0.14,
+          0.07,
+          0.12,
+          0.075,
+          0.09,
+          0.07,
+          0.135,
+          0.065,
+          0.095,
+          0.12
+        ],
+        "fpr_gt2_median": 0.0925,
+        "marginal_per_j_mean": [
+          0.04649999999999999,
+          0.046000000000000006,
+          0.035500000000000004,
+          0.0465,
+          0.04649999999999999,
+          0.0475,
+          0.0465,
+          0.05050000000000001,
+          0.0445,
+          0.05700000000000001,
+          0.052000000000000005,
+          0.05049999999999999,
+          0.05450000000000001,
+          0.06000000000000001,
+          0.0505,
+          0.05,
+          0.053500000000000006,
+          0.0465,
+          0.051000000000000004,
+          0.04549999999999999
+        ],
+        "marginal_min": 0.035500000000000004,
+        "marginal_max": 0.06000000000000001,
+        "predicted_indep_gt0": 0.6415140775914581,
+        "all_seeds_in_band": false
+      }
+    ]
+  },
+  "gates_not_run": [
+    "gate1",
+    "gate2"
+  ],
+  "files": {
+    "core": "causalbench/scripts/80_ranktest_core.py",
+    "oracle": "causalbench/scripts/81_ranktest_oracle.py",
+    "real": "causalbench/scripts/82_ranktest_real.py (written, NOT run; refuses to run while Gate 0 fails)"
+  }
+}
