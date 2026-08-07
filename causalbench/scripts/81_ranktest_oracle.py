@@ -1,0 +1,549 @@
+"""Gates 0, 1, 2 for the rank diagnostic. Mac-only. Writes JSON, no figures.
+
+Gate 0  calibration   -- control cells only, true rank 0. Is the readout
+                         labelled correctly at all?
+Gate 1  known answer  -- linear mixing, k-node interventions. Validity at
+                         k=1 and power at k=3.
+Gate 2  KILL GATE     -- nonlinear mixing. Can the diagnostic tell mixing
+                         nonlinearity apart from intervention density?
+
+Every gate runs on seeds 0..9 and reports PER-SEED values as well as the
+median. Seed 0 has masked two simulator bugs in this project already, so a
+gate passes only if it passes on all ten seeds.
+
+Every gate runs TWICE, on raw simulator output and on column-standardised
+output. Varsortability (Reisach et al., NeurIPS 2021) leaves any
+unstandardised result provisional.
+
+Usage:
+    python causalbench/scripts/81_ranktest_oracle.py --gate 0
+    python causalbench/scripts/81_ranktest_oracle.py --gate 1
+    python causalbench/scripts/81_ranktest_oracle.py --gate 2
+
+Gates are run in order and each is written before the next starts, because
+the handoff's rule is to stop at the first failing gate.
+
+SIMULATOR NOTES
+---------------
+* Observation noise. X = A Z exactly would be rank-deficient whenever the
+  projection dimension d exceeds d_latent, making the eigen-spectrum
+  numerically meaningless at d=20, d_latent=10. A small isotropic
+  observation noise is added instead. It is drawn with the SAME sd in every
+  environment, so it contributes the same term to Sigma_e and Sigma_0 and
+  CANCELS EXACTLY from Sigma_e - Sigma_0. The rank-<=2 property is therefore
+  untouched; only the PCA is regularised.
+* Gate 0 uses d_latent=20 so that d=20 is not degenerate even before the
+  observation noise.
+* Interventions.
+    hard  : zero row i of B AND replace the noise variance of node i.
+            Rank 2 per node in general, rank 1 when node i is a source.
+    soft  : rescale the noise variance of node i only. Rank 1 per node.
+    shift : add a constant to node i. Mean moves, covariance does not.
+            Expected r_hat = 0. This is the documented blind spot, recorded
+            rather than hidden.
+"""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+RESULTS = HERE.parent / "results" / "ranktest"
+
+SEEDS = list(range(10))
+ALPHA = 0.05
+B_NULL = 500
+
+
+def _load(path, name):
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+CORE = _load(HERE / "80_ranktest_core.py", "_ranktest_core")
+rank_diagnostic = CORE.rank_diagnostic
+null_band_from_pool = CORE.null_band_from_pool
+fit_pca = CORE.fit_pca
+project = CORE.project
+standardise = CORE.standardise
+
+
+# ------------------------------------------------------------------ writing
+def write_json(name, obj):
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    path = RESULTS / name
+    tmp = str(path) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.rename(tmp, path)
+    print(f"[write] {path}", flush=True)
+    return path
+
+
+# --------------------------------------------------------------- simulator
+def make_scm(d_latent, rng, edge_prob=0.4):
+    """Random DAG: strictly lower-triangular weights, then a random relabel."""
+    W = rng.uniform(0.5, 1.5, (d_latent, d_latent)) * rng.choice([-1.0, 1.0], (d_latent, d_latent))
+    B = np.where(np.tril(rng.random((d_latent, d_latent)) < edge_prob, -1), W, 0.0)
+    perm = rng.permutation(d_latent)
+    B = B[np.ix_(perm, perm)]          # relabelling a DAG leaves it a DAG
+    noise_var = rng.uniform(0.5, 1.5, d_latent)
+    is_source = (np.abs(B).sum(1) == 0)
+    return B, noise_var, is_source
+
+
+def sample_latent(B, noise_var, n, rng, kind=None, nodes=(), rng_iv=None):
+    """Z = B Z + D^{1/2} eps (+ shift). Returns (n, d_latent)."""
+    d = len(noise_var)
+    Be, nv, shift = B.copy(), noise_var.copy(), np.zeros(d)
+    riv = rng_iv if rng_iv is not None else rng
+    for i in nodes:
+        if kind == "hard":
+            Be[i, :] = 0.0
+            nv[i] = float(riv.uniform(2.0, 4.0))     # distinct from U(0.5,1.5)
+        elif kind == "soft":
+            nv[i] = nv[i] * float(riv.uniform(2.5, 4.0))
+        elif kind == "shift":
+            shift[i] = float(riv.uniform(2.0, 4.0))
+        else:
+            raise ValueError(f"unknown intervention kind {kind!r}")
+    M = np.linalg.inv(np.eye(d) - Be)
+    eps = rng.standard_normal((n, d)) * np.sqrt(nv)
+    return (eps + shift) @ M.T
+
+
+def mix_linear(Z, A):
+    return Z @ A.T
+
+
+def mix_mlp(Z, A1, A2, s, slope=0.1):
+    """2-layer leaky-ReLU mixing, nonlinearity scale s.
+
+    h_nl = (1 - s) * h + s * leaky_relu(h), so s=0 is EXACTLY the linear map
+    A2 @ A1 and s=1 is the full leaky-ReLU network. The s=0 reduction is
+    checked against the linear simulator run with A = A2 @ A1, which makes it
+    a bitwise-identical comparison rather than a distributional one.
+    """
+    h = Z @ A1.T
+    h = (1.0 - s) * h + s * np.where(h > 0, h, slope * h)
+    return h @ A2.T
+
+
+def add_obs_noise(X, sd, rng):
+    return X + sd * rng.standard_normal(X.shape)
+
+
+def split_pools(n_total, n_env):
+    """Disjoint index blocks: basis | reference pool | environment-draw pool.
+
+    n_p = 4 * n_env keeps n_match = min(n_env, n_p // 3) = n_env, so the
+    matched size equals the requested per-environment n exactly while still
+    satisfying the n_p >= 3 * n_match guard.
+    """
+    basis = np.arange(0, 2 * n_env)
+    pool = np.arange(2 * n_env, 6 * n_env)
+    env = np.arange(6 * n_env, n_total)
+    return basis, pool, env
+
+
+# ------------------------------------------------------------------- GATE 0
+def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
+          b_null=B_NULL):
+    """Control cells only, no intervention anywhere. True rank is 0.
+
+    PASS: the empirical r_hat > 0 rate sits within Monte-Carlo error of alpha
+    at every d and on every seed.
+
+    Three things are recorded, because on failure they are what separates an
+    implementation bug from a mis-specified pass criterion:
+
+      fpr_gt0     the stated pass criterion.
+      fpr_gt2     the rate of the event that actually carries the scientific
+                  claim -- the bundle being falsified -- when the null is
+                  true by construction. NOT the stated criterion, but the
+                  number that decides whether Phase B could mean anything.
+      marginal_per_j
+                  P(lam_j > band_j) for each j separately. Each is a level-
+                  alpha test by construction, so each SHOULD sit at alpha. If
+                  these are at alpha while fpr_gt0 is far above it, the
+                  estimator is correct and the criterion is the thing that is
+                  wrong; if these are off alpha, the estimator is broken.
+
+    A FRESH null band is drawn for every split (null_band is deliberately not
+    reused here). Reusing one band across the splits would make their
+    decisions share that band's Monte-Carlo error, which inflates the spread
+    of the measured rate and would itself be a candidate explanation for a
+    failure. Calibration is the one place where that shortcut cannot be taken.
+    """
+    n_total = 6 * n_env + 4 * n_env
+    basis_i, pool_i, env_i = split_pools(n_total, n_env)
+    out = {"config": dict(n_splits=n_splits, d_set=list(d_set), d_latent=d_latent,
+                          D=D, n_env=n_env, n_total=n_total, alpha=ALPHA,
+                          B_null=b_null, seeds=SEEDS,
+                          n_basis=len(basis_i), n_ref_pool=len(pool_i),
+                          n_env_pool=len(env_i)),
+           "runs": []}
+
+    for scaling in ("raw", "standardised"):
+        for d in d_set:
+            for seed in SEEDS:
+                rng = np.random.default_rng(10_000 + seed)
+                B, nv, _ = make_scm(d_latent, rng)
+                A = rng.standard_normal((D, d_latent))
+                Z = sample_latent(B, nv, n_total, rng)
+                X = mix_linear(Z, A)
+                sd = 0.1 * float(np.mean(X.std(0)))
+                X = add_obs_noise(X, sd, rng)
+                if scaling == "standardised":
+                    X = standardise(X, X[basis_i])
+
+                Xb, Xp, Xe = X[basis_i], X[pool_i], X[env_i]
+
+                rs = []
+                exceed = np.zeros((n_splits, d), dtype=bool)
+                for i in range(n_splits):
+                    # No null_band= : each split draws its own band.
+                    r = rank_diagnostic(Xe, Xb, Xp, d, n_env, b_null, ALPHA, rng,
+                                        basis_idx=basis_i, ref_pool_idx=pool_i)
+                    rs.append(r["r_hat"])
+                    exceed[i] = r["exceed"]
+
+                rs = np.asarray(rs)
+                rec = dict(scaling=scaling, d=d, seed=seed,
+                           n_splits=n_splits,
+                           fpr_gt0=float((rs > 0).mean()),
+                           fpr_gt2=float((rs > 2).mean()),
+                           marginal_per_j=[float(x) for x in exceed.mean(0)],
+                           predicted_indep_gt0=float(1 - (1 - ALPHA) ** d),
+                           r_hat_median=float(np.median(rs)),
+                           r_hat_mean=float(np.mean(rs)),
+                           r_hat_max=int(np.max(rs)))
+                out["runs"].append(rec)
+                print(f"[gate0] {scaling:<13} d={d:<3} seed={seed}  "
+                      f"FPR(r>0)={rec['fpr_gt0']:.3f}  FPR(r>2)={rec['fpr_gt2']:.3f}  "
+                      f"median r_hat={rec['r_hat_median']:.1f}", flush=True)
+
+    # ---- verdict
+    se = (ALPHA * (1 - ALPHA) / n_splits) ** 0.5
+    hi, lo = ALPHA + 2 * se, max(0.0, ALPHA - 2 * se)
+    summary = []
+    for scaling in ("raw", "standardised"):
+        for d in d_set:
+            sel = [r for r in out["runs"]
+                   if r["scaling"] == scaling and r["d"] == d]
+            v = [r["fpr_gt0"] for r in sel]
+            v2 = [r["fpr_gt2"] for r in sel]
+            mj = np.mean([r["marginal_per_j"] for r in sel], axis=0)
+            summary.append(dict(scaling=scaling, d=d,
+                                fpr_gt0_per_seed=v,
+                                fpr_gt0_median=float(np.median(v)),
+                                fpr_gt2_per_seed=v2,
+                                fpr_gt2_median=float(np.median(v2)),
+                                # mean over seeds of P(lam_j > band_j) per j
+                                marginal_per_j_mean=[float(x) for x in mj],
+                                marginal_min=float(mj.min()),
+                                marginal_max=float(mj.max()),
+                                predicted_indep_gt0=float(1 - (1 - ALPHA) ** d),
+                                all_seeds_in_band=bool(all(lo <= x <= hi for x in v))))
+    out["mc_band_2se"] = [lo, hi]
+    out["summary"] = summary
+    out["verdict"] = "PASS" if all(s["all_seeds_in_band"] for s in summary) else "FAIL"
+    out["pass_criterion"] = ("empirical r_hat>0 rate within 2 Monte-Carlo SE of "
+                             f"alpha={ALPHA} on every seed and every d")
+    return out
+
+
+# ------------------------------------------------------------------- GATE 1
+def gate1(configs=None, k_set=(1, 2, 3, 5), kinds=("hard", "soft"),
+          b_null=B_NULL):
+    """Linear mixing, known answer.
+
+    1a validity : k=1 gives r_hat <= 2 in >= 95% of runs
+    1b power    : k=3 gives r_hat >  2 in >= 80% of runs
+    Also records the full r_hat vs k curve and the shift-only blind spot.
+    """
+    if configs is None:
+        configs = [dict(d_latent=dl, D=DD, n=nn)
+                   for dl in (10, 20) for DD in (200, 1000) for nn in (500, 2000)]
+    out = {"config": dict(configs=configs, k_set=list(k_set), kinds=list(kinds),
+                          alpha=ALPHA, B_null=b_null, seeds=SEEDS),
+           "runs": []}
+
+    for scaling in ("raw", "standardised"):
+        for cfg in configs:
+            dl, D, n = cfg["d_latent"], cfg["D"], cfg["n"]
+            d = min(10, dl)                 # d <= d_latent, avoids degeneracy
+            n_total = 10 * n
+            basis_i, pool_i, env_i = split_pools(n_total, n)
+            for seed in SEEDS:
+                rng = np.random.default_rng(20_000 + seed)
+                B, nv, is_source = make_scm(dl, rng)
+                A = rng.standard_normal((D, dl))
+
+                Zc = sample_latent(B, nv, n_total, rng)
+                Xc = mix_linear(Zc, A)
+                sd = 0.1 * float(np.mean(Xc.std(0)))
+                Xc = add_obs_noise(Xc, sd, rng)
+                Xc_raw = Xc
+                if scaling == "standardised":
+                    Xc = standardise(Xc, Xc[basis_i])
+                Xb, Xp = Xc[basis_i], Xc[pool_i]
+
+                mu, W = fit_pca(Xb, d)
+                Yp = project(Xp, mu, W, ())
+                band = null_band_from_pool(Yp, n, b_null, ALPHA, rng)
+
+                for kind in list(kinds) + ["shift"]:
+                    ks = k_set if kind != "shift" else (1,)
+                    for k in ks:
+                        rng_iv = np.random.default_rng(30_000 + seed)
+                        nodes = rng_iv.choice(dl, size=k, replace=False)
+                        Ze = sample_latent(B, nv, n, rng, kind=kind,
+                                           nodes=nodes, rng_iv=rng_iv)
+                        Xe = add_obs_noise(mix_linear(Ze, A), sd, rng)
+                        if scaling == "standardised":
+                            Xe = standardise(Xe, Xc_raw[basis_i])
+
+                        r = rank_diagnostic(Xe, Xb, Xp, d, n, b_null, ALPHA, rng,
+                                            basis_idx=basis_i, ref_pool_idx=pool_i,
+                                            null_band=band)
+                        out["runs"].append(dict(
+                            scaling=scaling, d_latent=dl, D=D, n=n, d=d,
+                            seed=seed, kind=kind, k=int(k),
+                            nodes=[int(x) for x in nodes],
+                            n_sources_hit=int(sum(bool(is_source[i]) for i in nodes)),
+                            r_hat=r["r_hat"], lam=r["lam"][:6], band=r["band"][:6]))
+                print(f"[gate1] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
+                      flush=True)
+
+    out["summary"] = _gate1_summary(out["runs"], k_set, kinds)
+    val = out["summary"]["validity_k1"]
+    pow_ = out["summary"]["power_k3"]
+    out["verdict_1a"] = "PASS" if all(v["frac_le2"] >= 0.95 for v in val.values()) else "FAIL"
+    out["verdict_1b"] = "PASS" if all(v["frac_gt2"] >= 0.80 for v in pow_.values()) else "FAIL"
+    return out
+
+
+def _gate1_summary(runs, k_set, kinds):
+    curve, validity, power, shift = {}, {}, {}, {}
+    for scaling in ("raw", "standardised"):
+        for kind in list(kinds) + ["shift"]:
+            ks = k_set if kind != "shift" else (1,)
+            for k in ks:
+                sel = [r for r in runs if r["scaling"] == scaling
+                       and r["kind"] == kind and r["k"] == k]
+                if not sel:
+                    continue
+                vals = [r["r_hat"] for r in sel]
+                per_seed = {}
+                for s in SEEDS:
+                    sv = [r["r_hat"] for r in sel if r["seed"] == s]
+                    per_seed[str(s)] = float(np.median(sv)) if sv else None
+                rec = dict(n_runs=len(vals), median=float(np.median(vals)),
+                           per_seed_median=per_seed,
+                           frac_le2=float(np.mean([v <= 2 for v in vals])),
+                           frac_gt2=float(np.mean([v > 2 for v in vals])))
+                key = f"{scaling}|{kind}"
+                curve.setdefault(key, {})[str(k)] = rec
+                if kind != "shift" and k == 1:
+                    validity[key] = rec
+                if kind != "shift" and k == 3:
+                    power[key] = rec
+                if kind == "shift":
+                    shift[key] = rec
+    return dict(curve=curve, validity_k1=validity, power_k3=power,
+                shift_only=shift)
+
+
+# ------------------------------------------------------------------- GATE 2
+def gate2(s_set=(0.0, 0.1, 0.25, 0.5, 1.0), configs=None, b_null=B_NULL):
+    """KILL GATE. Nonlinear mixing at k=1, swept over nonlinearity scale s.
+
+    KILL CRITERION: if at s=0.25 the median r_hat for k=1 is >= the median
+    r_hat for k=3 under LINEAR mixing, the diagnostic cannot separate mixing
+    nonlinearity from intervention density, and Phase B must not run.
+
+    s=0 is asserted to reproduce the linear case. The comparison is made
+    against a linear run using A = A2 @ A1, so it is exact, not merely within
+    Monte-Carlo error.
+    """
+    if configs is None:
+        configs = [dict(d_latent=10, D=200, n=2000),
+                   dict(d_latent=20, D=200, n=2000)]
+    out = {"config": dict(s_set=list(s_set), configs=configs, alpha=ALPHA,
+                          B_null=b_null, seeds=SEEDS, k=1),
+           "runs": [], "s0_reduction": []}
+
+    for scaling in ("raw", "standardised"):
+        for cfg in configs:
+            dl, D, n = cfg["d_latent"], cfg["D"], cfg["n"]
+            d = min(10, dl)
+            n_total = 10 * n
+            basis_i, pool_i, env_i = split_pools(n_total, n)
+            for seed in SEEDS:
+                for s in s_set:
+                    rng = np.random.default_rng(40_000 + seed)
+                    B, nv, _ = make_scm(dl, rng)
+                    H = 4 * dl
+                    A1 = rng.standard_normal((H, dl)) / np.sqrt(dl)
+                    A2 = rng.standard_normal((D, H)) / np.sqrt(H)
+
+                    Zc = sample_latent(B, nv, n_total, rng)
+                    Xc = mix_mlp(Zc, A1, A2, s)
+                    sd = 0.1 * float(np.mean(Xc.std(0)))
+                    Xc = add_obs_noise(Xc, sd, rng)
+                    Xc_raw = Xc
+                    if scaling == "standardised":
+                        Xc = standardise(Xc, Xc[basis_i])
+                    Xb, Xp = Xc[basis_i], Xc[pool_i]
+
+                    mu, W = fit_pca(Xb, d)
+                    Yp = project(Xp, mu, W, ())
+                    band = null_band_from_pool(Yp, n, b_null, ALPHA, rng)
+
+                    rng_iv = np.random.default_rng(50_000 + seed)
+                    nodes = rng_iv.choice(dl, size=1, replace=False)
+                    Ze = sample_latent(B, nv, n, rng, kind="hard",
+                                       nodes=nodes, rng_iv=rng_iv)
+                    Xe = add_obs_noise(mix_mlp(Ze, A1, A2, s), sd, rng)
+                    if scaling == "standardised":
+                        Xe = standardise(Xe, Xc_raw[basis_i])
+
+                    r = rank_diagnostic(Xe, Xb, Xp, d, n, b_null, ALPHA, rng,
+                                        basis_idx=basis_i, ref_pool_idx=pool_i,
+                                        null_band=band)
+                    out["runs"].append(dict(scaling=scaling, d_latent=dl, D=D,
+                                            n=n, d=d, seed=seed, s=float(s),
+                                            k=1, r_hat=r["r_hat"],
+                                            lam=r["lam"][:6], band=r["band"][:6]))
+                print(f"[gate2] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
+                      flush=True)
+
+    out["summary"] = _gate2_summary(out["runs"], s_set)
+    return out
+
+
+def _gate2_summary(runs, s_set):
+    per_s = {}
+    for scaling in ("raw", "standardised"):
+        for s in s_set:
+            sel = [r["r_hat"] for r in runs
+                   if r["scaling"] == scaling and r["s"] == float(s)]
+            if not sel:
+                continue
+            per_seed = {}
+            for sd_ in SEEDS:
+                sv = [r["r_hat"] for r in runs if r["scaling"] == scaling
+                      and r["s"] == float(s) and r["seed"] == sd_]
+                per_seed[str(sd_)] = float(np.median(sv)) if sv else None
+            per_s.setdefault(scaling, {})[str(s)] = dict(
+                n_runs=len(sel), median=float(np.median(sel)),
+                per_seed_median=per_seed,
+                frac_le2=float(np.mean([v <= 2 for v in sel])))
+    return dict(per_s=per_s)
+
+
+def gate2_s0_reduction(configs=None, b_null=B_NULL):
+    """Step-0 check on the simulator: s=0 MLP mixing == linear mixing A2@A1.
+
+    Run separately so the equality is exact rather than distributional.
+    """
+    if configs is None:
+        configs = [dict(d_latent=10, D=200, n=2000)]
+    recs = []
+    for cfg in configs:
+        dl, D, n = cfg["d_latent"], cfg["D"], cfg["n"]
+        d = min(10, dl)
+        n_total = 10 * n
+        basis_i, pool_i, _ = split_pools(n_total, n)
+        for seed in SEEDS:
+            vals = {}
+            for mode in ("mlp_s0", "linear"):
+                rng = np.random.default_rng(40_000 + seed)
+                B, nv, _ = make_scm(dl, rng)
+                H = 4 * dl
+                A1 = rng.standard_normal((H, dl)) / np.sqrt(dl)
+                A2 = rng.standard_normal((D, H)) / np.sqrt(H)
+                A_eff = A2 @ A1
+
+                Zc = sample_latent(B, nv, n_total, rng)
+                Xc = (mix_mlp(Zc, A1, A2, 0.0) if mode == "mlp_s0"
+                      else mix_linear(Zc, A_eff))
+                sd = 0.1 * float(np.mean(Xc.std(0)))
+                Xc = add_obs_noise(Xc, sd, rng)
+                Xb, Xp = Xc[basis_i], Xc[pool_i]
+                mu, W = fit_pca(Xb, d)
+                Yp = project(Xp, mu, W, ())
+                band = null_band_from_pool(Yp, n, b_null, ALPHA, rng)
+
+                rng_iv = np.random.default_rng(50_000 + seed)
+                nodes = rng_iv.choice(dl, size=1, replace=False)
+                Ze = sample_latent(B, nv, n, rng, kind="hard", nodes=nodes,
+                                   rng_iv=rng_iv)
+                Xe = (mix_mlp(Ze, A1, A2, 0.0) if mode == "mlp_s0"
+                      else mix_linear(Ze, A_eff))
+                Xe = add_obs_noise(Xe, sd, rng)
+                r = rank_diagnostic(Xe, Xb, Xp, d, n, b_null, ALPHA, rng,
+                                    basis_idx=basis_i, ref_pool_idx=pool_i,
+                                    null_band=band)
+                vals[mode] = r
+            lam0 = np.array(vals["mlp_s0"]["lam"])
+            lam1 = np.array(vals["linear"]["lam"])
+            recs.append(dict(seed=seed, **cfg,
+                             r_hat_mlp_s0=vals["mlp_s0"]["r_hat"],
+                             r_hat_linear=vals["linear"]["r_hat"],
+                             max_abs_lam_diff=float(np.max(np.abs(lam0 - lam1))),
+                             identical=bool(np.allclose(lam0, lam1, rtol=1e-9,
+                                                        atol=1e-12))))
+            print(f"[gate2-s0] seed={seed} r_hat mlp_s0={recs[-1]['r_hat_mlp_s0']} "
+                  f"linear={recs[-1]['r_hat_linear']} "
+                  f"max|dlam|={recs[-1]['max_abs_lam_diff']:.3e}", flush=True)
+    return dict(runs=recs,
+                all_identical=bool(all(r["identical"] for r in recs)))
+
+
+# ---------------------------------------------------------------------- main
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--gate", required=True, choices=["0", "1", "2"])
+    ap.add_argument("--b-null", type=int, default=B_NULL)
+    ap.add_argument("--splits", type=int, default=200)
+    ap.add_argument("--tag", default="")
+    a = ap.parse_args()
+
+    if a.gate == "0":
+        res = gate0(n_splits=a.splits, b_null=a.b_null)
+        write_json(f"gate0{a.tag}.json", res)
+        print(f"\nGATE 0 VERDICT: {res['verdict']}", flush=True)
+        for s in res["summary"]:
+            print(f"  {s['scaling']:<13} d={s['d']:<3} "
+                  f"FPR(r>0) median={s['fpr_gt0_median']:.3f} "
+                  f"(indep prediction {s['predicted_indep_gt0']:.3f})  "
+                  f"FPR(r>2) median={s['fpr_gt2_median']:.3f}  "
+                  f"per-eigenvalue marginals in "
+                  f"[{s['marginal_min']:.3f}, {s['marginal_max']:.3f}] vs alpha={ALPHA}",
+                  flush=True)
+            print(f"      FPR(r>0) per seed = "
+                  f"{[round(x,3) for x in s['fpr_gt0_per_seed']]}", flush=True)
+            print(f"      FPR(r>2) per seed = "
+                  f"{[round(x,3) for x in s['fpr_gt2_per_seed']]}", flush=True)
+    elif a.gate == "1":
+        res = gate1(b_null=a.b_null)
+        write_json(f"gate1{a.tag}.json", res)
+        print(f"\nGATE 1a (validity, k=1): {res['verdict_1a']}", flush=True)
+        print(f"GATE 1b (power,    k=3): {res['verdict_1b']}", flush=True)
+    else:
+        red = gate2_s0_reduction(b_null=a.b_null)
+        write_json(f"gate2_s0_reduction{a.tag}.json", red)
+        res = gate2(b_null=a.b_null)
+        res["s0_reduction"] = red
+        write_json(f"gate2{a.tag}.json", res)
+
+
+if __name__ == "__main__":
+    main()
