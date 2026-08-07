@@ -255,20 +255,22 @@ def run_block(X, iv, vn, tag, rng, no_drop=False, standardise_cols=False,
             band_cache.setdefault(key, r["band"])
             block["runs"].append(dict(
                 d=d, env=str(g), n_env=int(n_e), n_match=r["n_match"],
-                r_hat=r["r_hat"], reject_bundle=r["reject_bundle"],
+                reject_rank2=bool(r["reject_rank2"]),
+                r_hat_stepdown=int(r["r_hat_stepdown"]),
                 lam=r["lam"], band=r["band"],
                 target_in_columns=bool(g in gidx)))
 
         scored = [r for r in block["runs"] if r["d"] == d]
         if scored:
-            rej = sum(r["reject_bundle"] for r in scored)
+            rej = sum(r["reject_rank2"] for r in scored)
             block["per_d"][str(d)].update(
-                n_scored=len(scored), n_reject_bundle=rej,
-                frac_reject_bundle=rej / len(scored),
-                r_hat_median=float(np.median([r["r_hat"] for r in scored])))
-            print(f"[{tag}] d={d:<3} r_hat>2 in {rej}/{len(scored)} "
-                  f"({rej/len(scored):.3f}), median r_hat="
-                  f"{block['per_d'][str(d)]['r_hat_median']:.1f}", flush=True)
+                n_scored=len(scored), n_reject_rank2=rej,
+                frac_reject_rank2=rej / len(scored),
+                stepdown_median=float(np.median(
+                    [r["r_hat_stepdown"] for r in scored])))
+            print(f"[{tag}] d={d:<3} reject_rank2 in {rej}/{len(scored)} "
+                  f"({rej/len(scored):.3f}), median stepdown rank="
+                  f"{block['per_d'][str(d)]['stepdown_median']:.1f}", flush=True)
     return block
 
 

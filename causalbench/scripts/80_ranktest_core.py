@@ -20,15 +20,33 @@ space contained in span{M D v, u}, hence rank <= 2. For a source node v = 0
 and only the delta term survives, hence rank 1. Linear mixing X = A Z maps
 this to A (Sigma_Z,e - Sigma_Z,0) A^T, which can only lose rank.
 
+THE DECISION -- reject_rank2, not a count
+-----------------------------------------
+H0(2) says at most two eigenvalues of Delta are non-zero, so the test is the
+SINGLE comparison lam[2] > band[2] on the third eigenvalue. One test, one
+alpha, no multiplicity to control.
+
+The earlier statistic summed exceedances over all d eigenvalues and called
+r_hat > 2 a rejection. That was d marginal level-alpha tests with no
+multiplicity control: its null distribution was approximately Binomial(d,
+alpha) rather than a point mass at 0, so it rejected on pure control data
+with nothing to detect at up to 0.09 at d=20. Gate 0 caught it. It survives
+for one commit as r_hat_marginal_DEPRECATED purely so that Gate 0 diff is
+auditable, and must not be used for anything.
+
+r_hat_stepdown is the accompanying rank ESTIMATE, by step-down: the number of
+leading eigenvalues that clear their band before the first one that does not.
+It is a descriptive readout, not the decision.
+
 INTERPRETATION RULE -- this is the whole point of the diagnostic
 ----------------------------------------------------------------
-* r_hat > 2 is INFORMATIVE. It falsifies the bundle: at least one of
+* reject_rank2 True is INFORMATIVE. It falsifies the bundle: at least one of
   linear-Gaussian latents, linear mixing, single-node intervention, or a
   shared mixing map fails on this data.
-* r_hat <= 2 is NOT evidence that the bundle holds. Covariance is
+* reject_rank2 False is NOT evidence that the bundle holds. Covariance is
   mean-centred, so a pure shift intervention moves the mean and leaves the
-  covariance alone, producing r_hat = 0 trivially. Only REJECTION carries a
-  claim.
+  covariance alone, producing no rejection trivially. Only REJECTION carries
+  a claim.
 * This is the SECOND-ORDER COMPLEMENT to the mean-shift screen in
   03_screen.py, not a replacement for it. The shift blind spot above is
   exactly what the mean-shift screen sees and this does not. Neither
@@ -48,19 +66,15 @@ DEVIATIONS FROM THE HANDOFF SPEC -- read before using any number from this
     Delta -- but it is kept so the arithmetic stays byte-identical to the
     screen.
 
-(2) n_match. The handoff specifies BOTH
-        n_match = min(n_e, floor(n_p / 2))
-    and the hard guard
-        raise if n_p < 3 * n_match.
-    These contradict each other. Whenever n_e is large the first sets
-    n_match = floor(n_p/2), and n_p >= 3*floor(n_p/2) is false for every
-    n_p >= 2, so the guard would fire on every run. The guard's stated
-    intent -- "do not silently reuse cells across the null draws" -- is the
-    binding constraint, so REF_SPLIT_FACTOR below is 3, not 2. This is the
-    conservative direction: it makes n_match smaller, which lowers power and
-    makes gates HARDER to pass, so it cannot manufacture a false PASS.
-    Change REF_SPLIT_FACTOR to 2 (and drop the guard to 2*) to get the other
-    reading; it is a one-line change and every result would need rerunning.
+(2) n_match. Resolved by amendment to
+        n_match = min(n_e, n_p // 3)
+    which supersedes the handoff's contradictory pair of
+    n_match = min(n_e, floor(n_p/2)) and "raise if n_p < 3 * n_match" (those
+    two could never both hold: whenever n_e was large the first gave
+    floor(n_p/2), and n_p >= 3*floor(n_p/2) is false for every n_p >= 2).
+    The n_match ARGUMENT is consequently inert -- it is not part of the min.
+    It stays in the signature for compatibility and is echoed back as
+    n_match_requested so a caller can see the request was not honoured.
 
 (3) drop=. Exposed as a keyword-only argument, default empty, so Phase B can
     apply the screen's targeted-gene masking consistently to the environment,
@@ -209,11 +223,20 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
             )
 
     # ---- sample-size matching. See deviation (2).
-    n_match_eff = int(min(n_match, n_e, n_p // REF_SPLIT_FACTOR))
+    # n_match = min(n_e, n_p // 3). The n_match ARGUMENT is not part of this
+    # min and is therefore inert; it is kept in the signature for
+    # compatibility and echoed back as n_match_requested so a caller can see
+    # that its request was not honoured.
+    n_match_eff = int(min(n_e, n_p // REF_SPLIT_FACTOR))
     if n_match_eff < 2:
         raise ValueError(
             f"n_match_eff={n_match_eff} < 2 (n_e={n_e}, n_p={n_p}, "
             f"requested n_match={n_match}); not enough cells to form a covariance"
+        )
+    if d < 3:
+        raise ValueError(
+            f"d={d} < 3: reject_rank2 tests the THIRD eigenvalue, which does "
+            f"not exist below d=3"
         )
     if n_p < REF_SPLIT_FACTOR * n_match_eff:
         raise ValueError(
@@ -257,15 +280,29 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
 
     # ---- statistic.
     exceed = lam > band
-    r_hat = int(exceed.sum())
+    # THE DECISION. H0(2) says at most two eigenvalues are non-zero, so the
+    # test is the SINGLE comparison on the third one. One test, so its null
+    # rate is alpha -- unlike the old count over all d eigenvalues, whose
+    # null rate was ~1-(1-alpha)^d because it never controlled multiplicity.
+    reject_rank2 = bool(lam[2] > band[2])
+
+    # Rank estimate by step-down: walk the sorted spectrum from the top and
+    # stop at the FIRST eigenvalue that fails to clear its band. Eigenvalues
+    # past a non-exceedance do not contribute, which is what separates this
+    # from the deprecated marginal count below.
+    r_hat_stepdown = 0
+    for j in range(d):
+        if not exceed[j]:
+            break
+        r_hat_stepdown += 1
 
     return dict(
-        r_hat=r_hat,
-        # r_hat > 2 is the falsification event. r_hat > 0 is the level-alpha
-        # event the calibration gate looks at. Both are recorded because they
-        # are NOT the same question and have very different null rates.
-        reject_bundle=bool(r_hat > 2),
-        any_exceed=bool(r_hat > 0),
+        reject_rank2=reject_rank2,
+        r_hat_stepdown=int(r_hat_stepdown),
+        # DEPRECATED, retained for exactly one commit so the Gate 0 diff is
+        # auditable against the failing run. Do not use: this is the
+        # uncontrolled marginal count whose null rate is ~1-(1-alpha)^d.
+        r_hat_marginal_DEPRECATED=int(exceed.sum()),
         lam=lam.tolist(),
         band=band.tolist(),
         exceed=exceed.tolist(),

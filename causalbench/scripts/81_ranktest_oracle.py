@@ -204,29 +204,36 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
 
                 Xb, Xp, Xe = X[basis_i], X[pool_i], X[env_i]
 
-                rs = []
+                rej, sd_, old = [], [], []
                 exceed = np.zeros((n_splits, d), dtype=bool)
                 for i in range(n_splits):
                     # No null_band= : each split draws its own band.
                     r = rank_diagnostic(Xe, Xb, Xp, d, n_env, b_null, ALPHA, rng,
                                         basis_idx=basis_i, ref_pool_idx=pool_i)
-                    rs.append(r["r_hat"])
+                    rej.append(r["reject_rank2"])
+                    sd_.append(r["r_hat_stepdown"])
+                    old.append(r["r_hat_marginal_DEPRECATED"])
                     exceed[i] = r["exceed"]
 
-                rs = np.asarray(rs)
+                rej, sd_, old = map(np.asarray, (rej, sd_, old))
                 rec = dict(scaling=scaling, d=d, seed=seed,
                            n_splits=n_splits,
-                           fpr_gt0=float((rs > 0).mean()),
-                           fpr_gt2=float((rs > 2).mean()),
-                           marginal_per_j=[float(x) for x in exceed.mean(0)],
+                           # THE pass criterion: a single test, so alpha.
+                           fpr_reject_rank2=float(rej.mean()),
+                           # step-down rank estimate, descriptive
+                           stepdown_median=float(np.median(sd_)),
+                           stepdown_gt2_rate=float((sd_ > 2).mean()),
+                           # deprecated marginal count, kept one commit so the
+                           # diff against the failing Gate 0 run is auditable
+                           deprecated_fpr_gt0=float((old > 0).mean()),
+                           deprecated_fpr_gt2=float((old > 2).mean()),
                            predicted_indep_gt0=float(1 - (1 - ALPHA) ** d),
-                           r_hat_median=float(np.median(rs)),
-                           r_hat_mean=float(np.mean(rs)),
-                           r_hat_max=int(np.max(rs)))
+                           marginal_per_j=[float(x) for x in exceed.mean(0)])
                 out["runs"].append(rec)
                 print(f"[gate0] {scaling:<13} d={d:<3} seed={seed}  "
-                      f"FPR(r>0)={rec['fpr_gt0']:.3f}  FPR(r>2)={rec['fpr_gt2']:.3f}  "
-                      f"median r_hat={rec['r_hat_median']:.1f}", flush=True)
+                      f"FPR(reject_rank2)={rec['fpr_reject_rank2']:.3f}  "
+                      f"[deprecated r>2={rec['deprecated_fpr_gt2']:.3f}]  "
+                      f"stepdown median={rec['stepdown_median']:.1f}", flush=True)
 
     # ---- verdict
     se = (ALPHA * (1 - ALPHA) / n_splits) ** 0.5
@@ -236,14 +243,18 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
         for d in d_set:
             sel = [r for r in out["runs"]
                    if r["scaling"] == scaling and r["d"] == d]
-            v = [r["fpr_gt0"] for r in sel]
-            v2 = [r["fpr_gt2"] for r in sel]
+            v = [r["fpr_reject_rank2"] for r in sel]
             mj = np.mean([r["marginal_per_j"] for r in sel], axis=0)
             summary.append(dict(scaling=scaling, d=d,
-                                fpr_gt0_per_seed=v,
-                                fpr_gt0_median=float(np.median(v)),
-                                fpr_gt2_per_seed=v2,
-                                fpr_gt2_median=float(np.median(v2)),
+                                fpr_reject_rank2_per_seed=v,
+                                fpr_reject_rank2_median=float(np.median(v)),
+                                # the failing statistic, same runs, for the diff
+                                deprecated_fpr_gt0_median=float(np.median(
+                                    [r["deprecated_fpr_gt0"] for r in sel])),
+                                deprecated_fpr_gt2_median=float(np.median(
+                                    [r["deprecated_fpr_gt2"] for r in sel])),
+                                stepdown_median=float(np.median(
+                                    [r["stepdown_median"] for r in sel])),
                                 # mean over seeds of P(lam_j > band_j) per j
                                 marginal_per_j_mean=[float(x) for x in mj],
                                 marginal_min=float(mj.min()),
@@ -253,8 +264,9 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
     out["mc_band_2se"] = [lo, hi]
     out["summary"] = summary
     out["verdict"] = "PASS" if all(s["all_seeds_in_band"] for s in summary) else "FAIL"
-    out["pass_criterion"] = ("empirical r_hat>0 rate within 2 Monte-Carlo SE of "
-                             f"alpha={ALPHA} on every seed and every d")
+    out["pass_criterion"] = (f"reject_rank2 rate inside [{lo:.3f}, {hi:.3f}] "
+                             f"(alpha={ALPHA} +/- 2 Monte-Carlo SE) on every "
+                             f"seed and every d")
     return out
 
 
@@ -317,15 +329,22 @@ def gate1(configs=None, k_set=(1, 2, 3, 5), kinds=("hard", "soft"),
                             seed=seed, kind=kind, k=int(k),
                             nodes=[int(x) for x in nodes],
                             n_sources_hit=int(sum(bool(is_source[i]) for i in nodes)),
-                            r_hat=r["r_hat"], lam=r["lam"][:6], band=r["band"][:6]))
+                            reject=bool(r["reject_rank2"]),
+                            stepdown=int(r["r_hat_stepdown"]),
+                            lam=r["lam"][:6], band=r["band"][:6]))
                 print(f"[gate1] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
                       flush=True)
 
     out["summary"] = _gate1_summary(out["runs"], k_set, kinds)
     val = out["summary"]["validity_k1"]
     pow_ = out["summary"]["power_k3"]
-    out["verdict_1a"] = "PASS" if all(v["frac_le2"] >= 0.95 for v in val.values()) else "FAIL"
-    out["verdict_1b"] = "PASS" if all(v["frac_gt2"] >= 0.80 for v in pow_.values()) else "FAIL"
+    # reject_rank2 is a calibrated test now, so validity IS the false-positive
+    # rate: k=1 satisfies H0(2) and must reject at no more than alpha.
+    out["verdict_1a"] = "PASS" if all(v["frac_reject"] <= 0.05 for v in val.values()) else "FAIL"
+    out["verdict_1b"] = "PASS" if all(v["frac_reject"] >= 0.80 for v in pow_.values()) else "FAIL"
+    out["criteria"] = dict(
+        v1a="k=1 rejects in <= 5% of runs (validity == FPR)",
+        v1b="k=3 rejects in >= 80% of runs (power)")
     return out
 
 
@@ -339,15 +358,19 @@ def _gate1_summary(runs, k_set, kinds):
                        and r["kind"] == kind and r["k"] == k]
                 if not sel:
                     continue
-                vals = [r["r_hat"] for r in sel]
-                per_seed = {}
+                rej = [r["reject"] for r in sel]
+                stp = [r["stepdown"] for r in sel]
+                per_seed, per_seed_sd = {}, {}
                 for s in SEEDS:
-                    sv = [r["r_hat"] for r in sel if r["seed"] == s]
-                    per_seed[str(s)] = float(np.median(sv)) if sv else None
-                rec = dict(n_runs=len(vals), median=float(np.median(vals)),
-                           per_seed_median=per_seed,
-                           frac_le2=float(np.mean([v <= 2 for v in vals])),
-                           frac_gt2=float(np.mean([v > 2 for v in vals])))
+                    sv = [r["reject"] for r in sel if r["seed"] == s]
+                    ss = [r["stepdown"] for r in sel if r["seed"] == s]
+                    per_seed[str(s)] = float(np.mean(sv)) if sv else None
+                    per_seed_sd[str(s)] = float(np.median(ss)) if ss else None
+                rec = dict(n_runs=len(rej),
+                           frac_reject=float(np.mean(rej)),
+                           per_seed_reject_rate=per_seed,
+                           stepdown_median=float(np.median(stp)),
+                           per_seed_stepdown_median=per_seed_sd)
                 key = f"{scaling}|{kind}"
                 curve.setdefault(key, {})[str(k)] = rec
                 if kind != "shift" and k == 1:
@@ -361,7 +384,8 @@ def _gate1_summary(runs, k_set, kinds):
 
 
 # ------------------------------------------------------------------- GATE 2
-def gate2(s_set=(0.0, 0.1, 0.25, 0.5, 1.0), configs=None, b_null=B_NULL):
+def gate2(s_set=(0.0, 0.1, 0.25, 0.5, 1.0), configs=None, b_null=B_NULL,
+          linear_k3_reject=None):
     """KILL GATE. Nonlinear mixing at k=1, swept over nonlinearity scale s.
 
     KILL CRITERION: if at s=0.25 the median r_hat for k=1 is >= the median
@@ -419,33 +443,55 @@ def gate2(s_set=(0.0, 0.1, 0.25, 0.5, 1.0), configs=None, b_null=B_NULL):
                                         null_band=band)
                     out["runs"].append(dict(scaling=scaling, d_latent=dl, D=D,
                                             n=n, d=d, seed=seed, s=float(s),
-                                            k=1, r_hat=r["r_hat"],
+                                            k=1, reject=bool(r["reject_rank2"]),
+                                            stepdown=int(r["r_hat_stepdown"]),
                                             lam=r["lam"][:6], band=r["band"][:6]))
                 print(f"[gate2] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
                       flush=True)
 
-    out["summary"] = _gate2_summary(out["runs"], s_set)
+    out["summary"] = _gate2_summary(out["runs"], s_set, linear_k3_reject)
     return out
 
 
-def _gate2_summary(runs, s_set):
+def _gate2_summary(runs, s_set, linear_k3_reject=None):
+    """per_s plus the kill criterion and the honest scope limit.
+
+    KILL: at s=0.25, the k=1 rejection rate under nonlinear mixing is >= the
+    k=3 rejection rate under LINEAR mixing. If that holds, a rejection cannot
+    be attributed to intervention density rather than mixing nonlinearity.
+
+    SCOPE LIMIT: the largest s at which k=1 still fails to reject in >= 90% of
+    runs. That number is the honest limit of the whole method.
+    """
     per_s = {}
     for scaling in ("raw", "standardised"):
         for s in s_set:
-            sel = [r["r_hat"] for r in runs
+            sel = [r for r in runs
                    if r["scaling"] == scaling and r["s"] == float(s)]
             if not sel:
                 continue
             per_seed = {}
             for sd_ in SEEDS:
-                sv = [r["r_hat"] for r in runs if r["scaling"] == scaling
-                      and r["s"] == float(s) and r["seed"] == sd_]
-                per_seed[str(sd_)] = float(np.median(sv)) if sv else None
+                sv = [r["reject"] for r in sel if r["seed"] == sd_]
+                per_seed[str(sd_)] = float(np.mean(sv)) if sv else None
             per_s.setdefault(scaling, {})[str(s)] = dict(
-                n_runs=len(sel), median=float(np.median(sel)),
-                per_seed_median=per_seed,
-                frac_le2=float(np.mean([v <= 2 for v in sel])))
-    return dict(per_s=per_s)
+                n_runs=len(sel),
+                frac_reject=float(np.mean([r["reject"] for r in sel])),
+                per_seed_reject_rate=per_seed,
+                stepdown_median=float(np.median([r["stepdown"] for r in sel])))
+
+    kill, scope = {}, {}
+    for scaling, by_s in per_s.items():
+        r025 = by_s.get("0.25", {}).get("frac_reject")
+        comp = (linear_k3_reject or {}).get(scaling)
+        kill[scaling] = dict(
+            k1_reject_at_s025=r025,
+            linear_k3_reject=comp,
+            triggered=(None if (r025 is None or comp is None) else bool(r025 >= comp)))
+        ok = [float(s) for s, v in by_s.items() if v["frac_reject"] <= 0.10]
+        scope[scaling] = max(ok) if ok else None
+    return dict(per_s=per_s, kill_criterion=kill,
+                largest_s_k1_noreject_90pct=scope)
 
 
 def gate2_s0_reduction(configs=None, b_null=B_NULL):
@@ -495,13 +541,13 @@ def gate2_s0_reduction(configs=None, b_null=B_NULL):
             lam0 = np.array(vals["mlp_s0"]["lam"])
             lam1 = np.array(vals["linear"]["lam"])
             recs.append(dict(seed=seed, **cfg,
-                             r_hat_mlp_s0=vals["mlp_s0"]["r_hat"],
-                             r_hat_linear=vals["linear"]["r_hat"],
+                             reject_mlp_s0=bool(vals["mlp_s0"]["reject_rank2"]),
+                             reject_linear=bool(vals["linear"]["reject_rank2"]),
                              max_abs_lam_diff=float(np.max(np.abs(lam0 - lam1))),
                              identical=bool(np.allclose(lam0, lam1, rtol=1e-9,
                                                         atol=1e-12))))
-            print(f"[gate2-s0] seed={seed} r_hat mlp_s0={recs[-1]['r_hat_mlp_s0']} "
-                  f"linear={recs[-1]['r_hat_linear']} "
+            print(f"[gate2-s0] seed={seed} reject mlp_s0={recs[-1]['reject_mlp_s0']} "
+                  f"linear={recs[-1]['reject_linear']} "
                   f"max|dlam|={recs[-1]['max_abs_lam_diff']:.3e}", flush=True)
     return dict(runs=recs,
                 all_identical=bool(all(r["identical"] for r in recs)))
@@ -520,29 +566,59 @@ def main():
         res = gate0(n_splits=a.splits, b_null=a.b_null)
         write_json(f"gate0{a.tag}.json", res)
         print(f"\nGATE 0 VERDICT: {res['verdict']}", flush=True)
+        print(f"  pass band = [{res['mc_band_2se'][0]:.3f}, "
+              f"{res['mc_band_2se'][1]:.3f}]", flush=True)
         for s in res["summary"]:
             print(f"  {s['scaling']:<13} d={s['d']:<3} "
-                  f"FPR(r>0) median={s['fpr_gt0_median']:.3f} "
-                  f"(indep prediction {s['predicted_indep_gt0']:.3f})  "
-                  f"FPR(r>2) median={s['fpr_gt2_median']:.3f}  "
+                  f"FPR(reject_rank2) median={s['fpr_reject_rank2_median']:.3f}  "
                   f"per-eigenvalue marginals in "
-                  f"[{s['marginal_min']:.3f}, {s['marginal_max']:.3f}] vs alpha={ALPHA}",
+                  f"[{s['marginal_min']:.3f}, {s['marginal_max']:.3f}] vs alpha={ALPHA}  "
+                  f"{'IN BAND' if s['all_seeds_in_band'] else 'OUT OF BAND'}",
                   flush=True)
-            print(f"      FPR(r>0) per seed = "
-                  f"{[round(x,3) for x in s['fpr_gt0_per_seed']]}", flush=True)
-            print(f"      FPR(r>2) per seed = "
-                  f"{[round(x,3) for x in s['fpr_gt2_per_seed']]}", flush=True)
+            print(f"      per seed        = "
+                  f"{[round(x,3) for x in s['fpr_reject_rank2_per_seed']]}", flush=True)
+            print(f"      deprecated stat : r>0 {s['deprecated_fpr_gt0_median']:.3f} "
+                  f"(indep prediction {s['predicted_indep_gt0']:.3f}), "
+                  f"r>2 {s['deprecated_fpr_gt2_median']:.3f}", flush=True)
     elif a.gate == "1":
         res = gate1(b_null=a.b_null)
         write_json(f"gate1{a.tag}.json", res)
-        print(f"\nGATE 1a (validity, k=1): {res['verdict_1a']}", flush=True)
-        print(f"GATE 1b (power,    k=3): {res['verdict_1b']}", flush=True)
+        print(f"\nGATE 1a (validity, k=1 rejects <= 5%): {res['verdict_1a']}", flush=True)
+        print(f"GATE 1b (power,    k=3 rejects >= 80%): {res['verdict_1b']}", flush=True)
+        for key, v in res["summary"]["validity_k1"].items():
+            print(f"  k=1 {key:<22} reject rate {v['frac_reject']:.3f}", flush=True)
+        for key, v in res["summary"]["power_k3"].items():
+            print(f"  k=3 {key:<22} reject rate {v['frac_reject']:.3f}", flush=True)
     else:
+        # Kill criterion compares against the LINEAR k=3 rejection rate, which
+        # lives in Gate 1. Pooled over the hard/soft kinds per scaling.
+        comp = None
+        g1p = RESULTS / f"gate1{a.tag}.json"
+        if g1p.exists():
+            g1 = json.load(open(g1p))
+            comp = {}
+            for scaling in ("raw", "standardised"):
+                vals = [v["frac_reject"] for k, v in g1["summary"]["power_k3"].items()
+                        if k.startswith(scaling + "|")]
+                if vals:
+                    comp[scaling] = float(np.mean(vals))
+            print(f"[gate2] linear k=3 comparator from {g1p.name}: {comp}", flush=True)
+        else:
+            print(f"[gate2] WARNING: {g1p} missing; kill criterion will be null",
+                  flush=True)
+
         red = gate2_s0_reduction(b_null=a.b_null)
         write_json(f"gate2_s0_reduction{a.tag}.json", red)
-        res = gate2(b_null=a.b_null)
+        res = gate2(b_null=a.b_null, linear_k3_reject=comp)
         res["s0_reduction"] = red
         write_json(f"gate2{a.tag}.json", res)
+        for scaling, k in res["summary"]["kill_criterion"].items():
+            print(f"\nGATE 2 {scaling}: k=1 reject at s=0.25 = {k['k1_reject_at_s025']}, "
+                  f"linear k=3 = {k['linear_k3_reject']}  -> KILL "
+                  f"{'TRIGGERED' if k['triggered'] else 'NOT TRIGGERED'}", flush=True)
+            print(f"  largest s with k=1 not rejecting in >=90% of runs: "
+                  f"{res['summary']['largest_s_k1_noreject_90pct'][scaling]}", flush=True)
+        print(f"\ns=0 reduction exact on all seeds: {red['all_identical']}", flush=True)
 
 
 if __name__ == "__main__":
