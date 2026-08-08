@@ -299,10 +299,6 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
     return dict(
         reject_rank2=reject_rank2,
         r_hat_stepdown=int(r_hat_stepdown),
-        # DEPRECATED, retained for exactly one commit so the Gate 0 diff is
-        # auditable against the failing run. Do not use: this is the
-        # uncontrolled marginal count whose null rate is ~1-(1-alpha)^d.
-        r_hat_marginal_DEPRECATED=int(exceed.sum()),
         lam=lam.tolist(),
         band=band.tolist(),
         exceed=exceed.tolist(),

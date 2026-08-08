@@ -156,23 +156,25 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
           b_null=B_NULL):
     """Control cells only, no intervention anywhere. True rank is 0.
 
-    PASS: the empirical r_hat > 0 rate sits within Monte-Carlo error of alpha
-    at every d and on every seed.
+    PASS: the reject_rank2 rate sits inside alpha +/- 2 Monte-Carlo SE.
 
-    Three things are recorded, because on failure they are what separates an
-    implementation bug from a mis-specified pass criterion:
+    NOTE WHAT THIS DOES AND DOES NOT ESTABLISH. Passing here means the test
+    holds its level when the true rank is ZERO. The operating null is the
+    COMPOSITE H0(2), rank <= 2, which also contains rank-2 signals of
+    arbitrary magnitude. Gate 0 says nothing about those; Gate 1 at k=1 is
+    what probes them, and that is where this diagnostic failed.
 
-      fpr_gt0     the stated pass criterion.
-      fpr_gt2     the rate of the event that actually carries the scientific
-                  claim -- the bundle being falsified -- when the null is
-                  true by construction. NOT the stated criterion, but the
-                  number that decides whether Phase B could mean anything.
-      marginal_per_j
-                  P(lam_j > band_j) for each j separately. Each is a level-
-                  alpha test by construction, so each SHOULD sit at alpha. If
-                  these are at alpha while fpr_gt0 is far above it, the
-                  estimator is correct and the criterion is the thing that is
-                  wrong; if these are off alpha, the estimator is broken.
+    Two things are recorded, because on failure they are what separates an
+    implementation bug from a mis-specified statistic:
+
+      fpr_reject_rank2   the pass criterion. One test, so it should sit at
+                         alpha.
+      marginal_per_j     P(lam_j > band_j) for each j separately. Each is a
+                         level-alpha test by construction, so each SHOULD sit
+                         at alpha. If these are on alpha while an aggregate
+                         readout is far above it, the estimator is correct
+                         and the statistic built on top of it is wrong; if
+                         these are off alpha, the estimator itself is broken.
 
     A FRESH null band is drawn for every split (null_band is deliberately not
     reused here). Reusing one band across the splits would make their
@@ -204,7 +206,7 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
 
                 Xb, Xp, Xe = X[basis_i], X[pool_i], X[env_i]
 
-                rej, sd_, old = [], [], []
+                rej, sd_ = [], []
                 exceed = np.zeros((n_splits, d), dtype=bool)
                 for i in range(n_splits):
                     # No null_band= : each split draws its own band.
@@ -212,10 +214,9 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
                                         basis_idx=basis_i, ref_pool_idx=pool_i)
                     rej.append(r["reject_rank2"])
                     sd_.append(r["r_hat_stepdown"])
-                    old.append(r["r_hat_marginal_DEPRECATED"])
                     exceed[i] = r["exceed"]
 
-                rej, sd_, old = map(np.asarray, (rej, sd_, old))
+                rej, sd_ = map(np.asarray, (rej, sd_))
                 rec = dict(scaling=scaling, d=d, seed=seed,
                            n_splits=n_splits,
                            # THE pass criterion: a single test, so alpha.
@@ -223,16 +224,11 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
                            # step-down rank estimate, descriptive
                            stepdown_median=float(np.median(sd_)),
                            stepdown_gt2_rate=float((sd_ > 2).mean()),
-                           # deprecated marginal count, kept one commit so the
-                           # diff against the failing Gate 0 run is auditable
-                           deprecated_fpr_gt0=float((old > 0).mean()),
-                           deprecated_fpr_gt2=float((old > 2).mean()),
                            predicted_indep_gt0=float(1 - (1 - ALPHA) ** d),
                            marginal_per_j=[float(x) for x in exceed.mean(0)])
                 out["runs"].append(rec)
                 print(f"[gate0] {scaling:<13} d={d:<3} seed={seed}  "
                       f"FPR(reject_rank2)={rec['fpr_reject_rank2']:.3f}  "
-                      f"[deprecated r>2={rec['deprecated_fpr_gt2']:.3f}]  "
                       f"stepdown median={rec['stepdown_median']:.1f}", flush=True)
 
     # ---- verdict
@@ -248,11 +244,6 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
             summary.append(dict(scaling=scaling, d=d,
                                 fpr_reject_rank2_per_seed=v,
                                 fpr_reject_rank2_median=float(np.median(v)),
-                                # the failing statistic, same runs, for the diff
-                                deprecated_fpr_gt0_median=float(np.median(
-                                    [r["deprecated_fpr_gt0"] for r in sel])),
-                                deprecated_fpr_gt2_median=float(np.median(
-                                    [r["deprecated_fpr_gt2"] for r in sel])),
                                 stepdown_median=float(np.median(
                                     [r["stepdown_median"] for r in sel])),
                                 # mean over seeds of P(lam_j > band_j) per j
@@ -577,9 +568,6 @@ def main():
                   flush=True)
             print(f"      per seed        = "
                   f"{[round(x,3) for x in s['fpr_reject_rank2_per_seed']]}", flush=True)
-            print(f"      deprecated stat : r>0 {s['deprecated_fpr_gt0_median']:.3f} "
-                  f"(indep prediction {s['predicted_indep_gt0']:.3f}), "
-                  f"r>2 {s['deprecated_fpr_gt2_median']:.3f}", flush=True)
     elif a.gate == "1":
         res = gate1(b_null=a.b_null)
         write_json(f"gate1{a.tag}.json", res)
