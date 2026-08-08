@@ -1,56 +1,10 @@
 {
   "lane": "ranktest",
-  "statistic": "reject_rank2 = lam[2] > band[2] (single test on the third eigenvalue)",
-  "supersedes": "r_hat_marginal_DEPRECATED, the uncontrolled count whose null rate was ~1-(1-alpha)^d",
-  "status": "Gate 0 rerun complete. Verdict depends on how the pass criterion is read; see verdict_readings.",
-  "verdict_readings": {
-    "per_d_pooled": "PASS - all six cells pool to 0.036-0.039, inside [0.019, 0.081]",
-    "all_ten_seeds": "FAIL - 1 to 2 seeds per cell fall BELOW 0.019",
-    "direction": "every miss is conservative; no cell and no seed ever exceeded 0.081"
-  },
-  "environment": {
-    "python": "3.11.15",
-    "numpy": "2.4.6",
-    "scipy": "1.17.1",
-    "pandas": "3.0.3",
-    "sklearn": "1.9.0"
-  },
+  "statistic": "reject_rank2 = lam[2] > band[2]; r_hat_stepdown is a descriptive rank estimate",
+  "status": "STOPPED AT GATE 1. Gate 2 was NOT run. Phase B must not run.",
   "gate0": {
-    "verdict_as_coded": "FAIL",
-    "pass_criterion": "reject_rank2 rate inside [0.019, 0.081] (alpha=0.05 +/- 2 Monte-Carlo SE) on every seed and every d",
-    "mc_band_2se": [
-      0.01917792998515512,
-      0.08082207001484489
-    ],
-    "config": {
-      "n_splits": 200,
-      "d_set": [
-        5,
-        10,
-        20
-      ],
-      "d_latent": 20,
-      "D": 200,
-      "n_env": 300,
-      "n_total": 3000,
-      "alpha": 0.05,
-      "B_null": 500,
-      "seeds": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9
-      ],
-      "n_basis": 600,
-      "n_ref_pool": 1200,
-      "n_env_pool": 1200
-    },
+    "verdict": "PASS (per-d pooled reading, ruled by Gaurav)",
+    "note": "all six cells pool to 0.036-0.039 inside [0.019, 0.081]; 1-2 seeds per cell fall BELOW the band, none above, so every miss is conservative",
     "per_d": {
       "raw|d=5": {
         "pooled_rate": 0.036000000000000004,
@@ -66,11 +20,11 @@
           0.08,
           0.02
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           5
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       },
       "raw|d=10": {
         "pooled_rate": 0.037,
@@ -86,11 +40,11 @@
           0.07,
           0.03
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           5
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       },
       "raw|d=20": {
         "pooled_rate": 0.038,
@@ -106,11 +60,11 @@
           0.07,
           0.03
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           5
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       },
       "standardised|d=5": {
         "pooled_rate": 0.0365,
@@ -126,12 +80,12 @@
           0.055,
           0.04
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           1,
           2
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       },
       "standardised|d=10": {
         "pooled_rate": 0.038,
@@ -147,11 +101,11 @@
           0.055,
           0.025
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           1
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       },
       "standardised|d=20": {
         "pooled_rate": 0.039,
@@ -167,17 +121,51 @@
           0.055,
           0.035
         ],
+        "pooled_in_band": true,
         "seeds_below_band": [
           1
         ],
-        "seeds_above_band": [],
-        "pooled_in_band": true
+        "seeds_above_band": []
       }
     },
-    "decomposition": "per-eigenvalue marginals sit in [0.036, 0.062] against alpha=0.05, so the projection and band machinery are correct. The deprecated marginal count on the SAME runs still tracks 1-(1-alpha)^d (0.217/0.370/0.595 vs 0.226/0.401/0.642), confirming the old failure was the statistic's definition and not the estimator."
+    "unexplained": "the ~0.037 vs 0.05 gap is unexplained; a reference-pool-size test was inconclusive because the test itself held the environment pool equal to n_match"
   },
-  "gates_not_run": [
-    "gate1",
-    "gate2"
-  ]
+  "gate1": {
+    "verdict_1a": "FAIL",
+    "verdict_1b": "FAIL",
+    "criteria": {
+      "v1a": "k=1 rejects in <= 5% of runs (validity == FPR)",
+      "v1b": "k=3 rejects in >= 80% of runs (power)"
+    },
+    "validity_k1": {
+      "raw|hard": 0.4375,
+      "raw|soft": 0.225,
+      "standardised|hard": 0.425,
+      "standardised|soft": 0.25
+    },
+    "power_k3": {
+      "raw|hard": 0.9875,
+      "raw|soft": 0.6125,
+      "standardised|hard": 1.0,
+      "standardised|soft": 0.6375
+    },
+    "shift_only": {
+      "raw|shift": 0.025,
+      "standardised|shift": 0.025
+    },
+    "diagnosis": {
+      "population_rank_check": "closed-form Sigma_e - Sigma_0 projected into the PCA basis gives lam[2]/lam[0] <= 3.3e-16 over 10 seeds for both hard and soft k=1, so the rank-<=2 claim holds EXACTLY and every k=1 rejection is a false positive. The simulator and the theory sketch are not at fault.",
+      "band_dispersion_check": "rebuilding the band from environment-vs-environment splits instead of control-vs-control moved k=1 rejection only from 0.360 to 0.335 (hard) and 0.315 to 0.220 (soft), so an environment-vs-control dispersion mismatch is not the main cause.",
+      "magnitude_sweep": "holding population rank at 1 and scaling the intervened node's noise variance by 1.00/1.05/1.20/1.50/2.00/3.00 gives k=1 rejection 0.083/0.106/0.156/0.217/0.300/0.322. The false-positive rate scales with the MAGNITUDE of a rank-1 signal that satisfies H0(2) throughout.",
+      "conclusion": "H0(2) is a COMPOSITE null. Gate 0 established level control only at rank 0. A null band resampled from control-vs-control cannot see a rank-<=2 signal that is genuinely present, so under any appreciable single-node intervention the sample lam[2] is inflated and the test over-rejects. This is a property of the specified statistic, not an implementation defect."
+    }
+  },
+  "gate2": "NOT RUN",
+  "environment": {
+    "python": "3.11.15",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "pandas": "3.0.3",
+    "sklearn": "1.9.0"
+  }
 }
