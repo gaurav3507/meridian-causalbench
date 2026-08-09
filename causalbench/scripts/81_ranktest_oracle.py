@@ -321,8 +321,6 @@ def gate1(configs=None, k_set=(1, 2, 3, 5), kinds=("hard", "soft"),
                             nodes=[int(x) for x in nodes],
                             n_sources_hit=int(sum(bool(is_source[i]) for i in nodes)),
                             reject=bool(r["reject_rank2_cf"]),
-                            reject_zeroband_DEPRECATED=bool(
-                                r["reject_rank2_zeroband_DEPRECATED"]),
                             cf_r_hat=int(r["cf_r_hat"]),
                             stepdown=int(r["r_hat_stepdown"]),
                             lam=r["lam"][:6], band=r["band"][:6]))
@@ -362,8 +360,6 @@ def _gate1_summary(runs, k_set, kinds):
                     per_seed_sd[str(s)] = float(np.median(ss)) if ss else None
                 rec = dict(n_runs=len(rej),
                            frac_reject=float(np.mean(rej)),
-                           frac_reject_zeroband_DEPRECATED=float(np.mean(
-                               [r["reject_zeroband_DEPRECATED"] for r in sel])),
                            cf_r_hat_mean=float(np.mean(
                                [r["cf_r_hat"] for r in sel])),
                            per_seed_reject_rate=per_seed,

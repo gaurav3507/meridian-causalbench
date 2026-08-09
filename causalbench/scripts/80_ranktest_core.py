@@ -40,9 +40,7 @@ TWO STATISTICS HAVE ALREADY BEEN RETIRED HERE, both caught by the gates.
    caught it: with the population rank held at 1, the rejection rate ran
    0.083 / 0.106 / 0.156 / 0.217 / 0.300 / 0.322 as the intervened node's
    noise variance was scaled by 1.00 to 3.00. The test was reading
-   intervention STRENGTH, not intervention RANK. It survives for one commit
-   as reject_rank2_zeroband_DEPRECATED so the Gate 1 diff is auditable, and
-   must not be used for anything.
+   intervention STRENGTH, not intervention RANK.
 
 The lesson both times: passing a gate at one point of a composite null says
 nothing about the rest of it.
@@ -384,10 +382,6 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
         Y_e, Y_0, 2, B_null, alpha, rng)
 
     exceed = lam > band
-    # DEPRECATED, retained for exactly one commit so the Gate 1 diff is
-    # auditable against the failing run. This is the zero-signal-band rule
-    # whose rejection rate tracked intervention STRENGTH rather than rank.
-    reject_rank2_zeroband_DEPRECATED = bool(lam[2] > band[2])
 
     # Rank estimate by step-down: walk the sorted spectrum from the top and
     # stop at the FIRST eigenvalue that fails to clear its band. Descriptive
@@ -404,7 +398,6 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
         cf_crit=cf_crit,
         cf_r_hat=cf_rhat,
         cf_kappa=cf_kappa,
-        reject_rank2_zeroband_DEPRECATED=reject_rank2_zeroband_DEPRECATED,
         r_hat_stepdown=int(r_hat_stepdown),
         lam=lam.tolist(),
         band=band.tolist(),
