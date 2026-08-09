@@ -1,163 +1,107 @@
 {
   "lane": "ranktest",
-  "statistic": "reject_rank2 = lam[2] > band[2]; r_hat_stepdown is a descriptive rank estimate",
-  "status": "STOPPED AT GATE 1. Gate 2 was NOT run. Phase B must not run.",
+  "statistic": "reject_rank2_cf = Chen-Fang (2019) composite-null rank test, H0: rank(Delta)<=2",
+  "which_test": "Chen-Fang",
+  "which_test_reason": "their formulation is exactly H0: rank<=r and their regularity conditions hold here (sqrt(n)-asymptotics for a covariance difference of iid rows, consistent nonparametric bootstrap). Leung-Sturma (arXiv 2401.02112) was not needed.",
+  "citation": "Chen, Q. and Z. Fang (2019), Improved inference on the rank of a matrix, Quantitative Economics 10(4) 1787-1824, arXiv:1812.02337. Implementation guide Steps 1-5, equations (9), (10), (11).",
+  "status": "STOPPED AFTER GATE 1 for a decision, per handoff section 4. Gate 2 NOT run. Phase B still refusing.",
+  "acceptance": {
+    "multipliers": [
+      1.0,
+      1.05,
+      1.2,
+      1.5,
+      2.0,
+      3.0
+    ],
+    "cf_reject": [
+      0.0,
+      0.0,
+      0.012,
+      0.04,
+      0.032,
+      0.025
+    ],
+    "old_zeroband_same_runs": [
+      0.06,
+      0.058,
+      0.115,
+      0.182,
+      0.295,
+      0.308
+    ],
+    "n_draws_per_point": 600,
+    "verdict": "FLAT-AT-ALPHA",
+    "note": "CF peaks at 0.040 then falls; it does not climb. Old rule climbs 5x and through alpha."
+  },
   "gate0": {
-    "verdict": "PASS (per-d pooled reading, ruled by Gaurav)",
-    "note": "all six cells pool to 0.036-0.039 inside [0.019, 0.081]; 1-2 seeds per cell fall BELOW the band, none above, so every miss is conservative",
-    "per_d": {
-      "raw|d=5": {
-        "pooled_rate": 0.036000000000000004,
-        "per_seed": [
-          0.07,
-          0.03,
-          0.02,
-          0.04,
-          0.025,
-          0.01,
-          0.03,
-          0.035,
-          0.08,
-          0.02
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          5
-        ],
-        "seeds_above_band": []
-      },
-      "raw|d=10": {
-        "pooled_rate": 0.037,
-        "per_seed": [
-          0.065,
-          0.03,
-          0.025,
-          0.04,
-          0.035,
-          0.01,
-          0.03,
-          0.035,
-          0.07,
-          0.03
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          5
-        ],
-        "seeds_above_band": []
-      },
-      "raw|d=20": {
-        "pooled_rate": 0.038,
-        "per_seed": [
-          0.065,
-          0.03,
-          0.025,
-          0.04,
-          0.035,
-          0.015,
-          0.03,
-          0.04,
-          0.07,
-          0.03
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          5
-        ],
-        "seeds_above_band": []
-      },
-      "standardised|d=5": {
-        "pooled_rate": 0.0365,
-        "per_seed": [
-          0.08,
-          0.015,
-          0.015,
-          0.035,
-          0.035,
-          0.02,
-          0.025,
-          0.045,
-          0.055,
-          0.04
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          1,
-          2
-        ],
-        "seeds_above_band": []
-      },
-      "standardised|d=10": {
-        "pooled_rate": 0.038,
-        "per_seed": [
-          0.08,
-          0.015,
-          0.035,
-          0.045,
-          0.035,
-          0.02,
-          0.025,
-          0.045,
-          0.055,
-          0.025
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          1
-        ],
-        "seeds_above_band": []
-      },
-      "standardised|d=20": {
-        "pooled_rate": 0.039,
-        "per_seed": [
-          0.075,
-          0.015,
-          0.03,
-          0.045,
-          0.045,
-          0.02,
-          0.025,
-          0.045,
-          0.055,
-          0.035
-        ],
-        "pooled_in_band": true,
-        "seeds_below_band": [
-          1
-        ],
-        "seeds_above_band": []
-      }
+    "pooled": {
+      "raw|d=5": 0.0095,
+      "raw|d=10": 0.0095,
+      "raw|d=20": 0.009,
+      "standardised|d=5": 0.006,
+      "standardised|d=10": 0.0035000000000000005,
+      "standardised|d=20": 0.003
     },
-    "unexplained": "the ~0.037 vs 0.05 gap is unexplained; a reference-pool-size test was inconclusive because the test itself held the environment pool equal to n_match"
+    "verdict_as_coded": "FAIL",
+    "any_cell_above_band": false,
+    "reading": "every cell is BELOW [0.019,0.081], none above. The handoff's stop condition is ABOVE (anti-conservative bootstrap); it also states a correct composite-null test is exact or conservative at rank 0, which is what was observed."
   },
   "gate1": {
-    "verdict_1a": "FAIL",
-    "verdict_1b": "FAIL",
-    "criteria": {
-      "v1a": "k=1 rejects in <= 5% of runs (validity == FPR)",
-      "v1b": "k=3 rejects in >= 80% of runs (power)"
+    "verdict_1a": "FAIL (hard only)",
+    "verdict_1b": "FAIL (soft only)",
+    "k1": {
+      "raw|hard": 0.1125,
+      "raw|soft": 0.0125,
+      "standardised|hard": 0.1125,
+      "standardised|soft": 0.0375
     },
-    "validity_k1": {
-      "raw|hard": 0.4375,
-      "raw|soft": 0.225,
-      "standardised|hard": 0.425,
-      "standardised|soft": 0.25
-    },
-    "power_k3": {
+    "k3": {
       "raw|hard": 0.9875,
-      "raw|soft": 0.6125,
-      "standardised|hard": 1.0,
-      "standardised|soft": 0.6375
+      "raw|soft": 0.4625,
+      "standardised|hard": 0.9875,
+      "standardised|soft": 0.4375
     },
-    "shift_only": {
-      "raw|shift": 0.025,
-      "standardised|shift": 0.025
+    "shift": {
+      "raw|shift": 0.0,
+      "standardised|shift": 0.0
     },
-    "diagnosis": {
-      "population_rank_check": "closed-form Sigma_e - Sigma_0 projected into the PCA basis gives lam[2]/lam[0] <= 3.3e-16 over 10 seeds for both hard and soft k=1, so the rank-<=2 claim holds EXACTLY and every k=1 rejection is a false positive. The simulator and the theory sketch are not at fault.",
-      "band_dispersion_check": "rebuilding the band from environment-vs-environment splits instead of control-vs-control moved k=1 rejection only from 0.360 to 0.335 (hard) and 0.315 to 0.220 (soft), so an environment-vs-control dispersion mismatch is not the main cause.",
-      "magnitude_sweep": "holding population rank at 1 and scaling the intervened node's noise variance by 1.00/1.05/1.20/1.50/2.00/3.00 gives k=1 rejection 0.083/0.106/0.156/0.217/0.300/0.322. The false-positive rate scales with the MAGNITUDE of a rank-1 signal that satisfies H0(2) throughout.",
-      "conclusion": "H0(2) is a COMPOSITE null. Gate 0 established level control only at rank 0. A null band resampled from control-vs-control cannot see a rank-<=2 signal that is genuinely present, so under any appreciable single-node intervention the sample lam[2] is inflated and the test over-rejects. This is a property of the specified statistic, not an implementation defect."
+    "interior_vs_boundary": {
+      "hard_source_true_rank1_interior": {
+        "n": 16,
+        "reject": 0.0
+      },
+      "hard_nonsource_true_rank2_boundary": {
+        "n": 144,
+        "reject": 0.125
+      },
+      "soft_true_rank1_interior": 0.025
+    },
+    "rhat_effect": {
+      "reject_when_rhat1": 0.18181818181818182,
+      "reject_when_rhat2": 0.09448818897637795
+    },
+    "diagnosis": "CF holds its level in the INTERIOR of H0(2) (true rank <= 1): 0.000 hard-on-source, 0.025 soft. It over-rejects only at the BOUNDARY (true rank exactly 2): 0.125. Two contributors: the tuning parameter kappa under-estimates r_hat (reject 0.182 when r_hat=1 vs 0.094 when r_hat=2), and a residual boundary excess remains even when r_hat is correct. Chen-Fang themselves note kappa is a tuning parameter and recommend the tuning-free sequential KP-based estimator instead.",
+    "soft_power_curve": {
+      "n_e": [
+        500,
+        2000,
+        8000,
+        20000
+      ],
+      "reject_raw": [
+        0.5,
+        0.7,
+        1.0,
+        1.0
+      ],
+      "reject_std": [
+        0.6,
+        0.7,
+        1.0,
+        1.0
+      ],
+      "verdict": "power problem that n fixes, not a structural inability"
     }
   },
   "gate2": "NOT RUN",
