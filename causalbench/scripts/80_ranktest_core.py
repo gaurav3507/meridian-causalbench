@@ -20,23 +20,36 @@ space contained in span{M D v, u}, hence rank <= 2. For a source node v = 0
 and only the delta term survives, hence rank 1. Linear mixing X = A Z maps
 this to A (Sigma_Z,e - Sigma_Z,0) A^T, which can only lose rank.
 
-THE DECISION -- reject_rank2, not a count
------------------------------------------
-H0(2) says at most two eigenvalues of Delta are non-zero, so the test is the
-SINGLE comparison lam[2] > band[2] on the third eigenvalue. One test, one
-alpha, no multiplicity to control.
+THE DECISION -- reject_rank2_cf (Chen-Fang)
+--------------------------------------------
+The decision is the Chen-Fang composite-null-calibrated rank test; see
+chen_fang_rank_test below for the algorithm and the citation.
 
-The earlier statistic summed exceedances over all d eigenvalues and called
-r_hat > 2 a rejection. That was d marginal level-alpha tests with no
-multiplicity control: its null distribution was approximately Binomial(d,
-alpha) rather than a point mass at 0, so it rejected on pure control data
-with nothing to detect at up to 0.09 at d=20. Gate 0 caught it. It survives
-for one commit as r_hat_marginal_DEPRECATED purely so that Gate 0 diff is
-auditable, and must not be used for anything.
+TWO STATISTICS HAVE ALREADY BEEN RETIRED HERE, both caught by the gates.
 
-r_hat_stepdown is the accompanying rank ESTIMATE, by step-down: the number of
-leading eigenvalues that clear their band before the first one that does not.
-It is a descriptive readout, not the decision.
+1. A count of exceedances over all d eigenvalues, rejecting when the count
+   exceeded 2. That was d marginal level-alpha tests with no multiplicity
+   control, so its null distribution was approximately Binomial(d, alpha)
+   rather than a point mass at 0 and it fired on pure control data at up to
+   0.09 at d=20. Gate 0 caught it.
+
+2. The single comparison lam[2] > band[2] against a band resampled from
+   control-vs-control splits. One test, so Gate 0 passed. But that band
+   calibrates the rank-2 null at its EMPTIEST point, zero signal, while
+   H0(2) is COMPOSITE and contains rank-2 signals of any magnitude. Gate 1
+   caught it: with the population rank held at 1, the rejection rate ran
+   0.083 / 0.106 / 0.156 / 0.217 / 0.300 / 0.322 as the intervened node's
+   noise variance was scaled by 1.00 to 3.00. The test was reading
+   intervention STRENGTH, not intervention RANK. It survives for one commit
+   as reject_rank2_zeroband_DEPRECATED so the Gate 1 diff is auditable, and
+   must not be used for anything.
+
+The lesson both times: passing a gate at one point of a composite null says
+nothing about the rest of it.
+
+r_hat_stepdown is a descriptive rank readout, not the decision, and it still
+rides on the retired zero-signal band, so it inherits that magnitude
+sensitivity. Do not quote it as a rank estimate.
 
 INTERPRETATION RULE -- this is the whole point of the diagnostic
 ----------------------------------------------------------------
@@ -150,6 +163,94 @@ def _two_disjoint(n_pool, n_match, rng):
     """Two index sets of size n_match into [0, n_pool), guaranteed disjoint."""
     take = rng.choice(n_pool, size=2 * n_match, replace=False)
     return take[:n_match], take[n_match:]
+
+
+def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng):
+    """Chen-Fang composite-null-calibrated test of H0: rank(Delta) <= r.
+
+    Chen, Q. and Z. Fang (2019), "Improved inference on the rank of a matrix",
+    Quantitative Economics 10(4), 1787-1824 (arXiv:1812.02337). This follows
+    their implementation guide, Steps 1-5, with equations (9), (10) and (11).
+    Their formulation is exactly H0: rank(Pi_0) <= r rather than
+    rank(Pi_0) = r, which is the composite null we need: it does not assume
+    away rank < r, and it is the assumption that over-rejects when violated.
+
+    WHY THIS FIXES OUR FAILURE. Our own rule compared lam[2] against a band
+    resampled from control-vs-control splits, i.e. it calibrated the rank-2
+    null at its EMPTIEST point, zero signal. Chen-Fang instead projects the
+    recentred bootstrap fluctuation M* onto the ESTIMATED null space
+    (P2_hat, Q2_hat) before reading singular values, so the critical value
+    depends on the data only through the null-space DIRECTIONS and not
+    through the magnitude of the signal singular values. That is precisely
+    the dependence that made our rejection rate climb from 0.083 to 0.322 as
+    the intervention strengthened while the true rank stayed 1.
+
+    Steps, in their numbering:
+      1. SVD  Delta = P S Q'.
+      2. r_hat = max{j = 1..r : sigma_j(Delta) >= kappa}, else 0        (eq 9)
+      3. Bootstrap B copies of M* = tau * (Delta* - Delta).
+      4. P2, Q2 = last (d - r_hat) columns of P, Q. The critical value is the
+         (1-alpha) quantile of  sum_{j=r-r_hat+1}^{d-r_hat} sigma_j^2(P2' M* Q2)
+                                                                      (eq 11)
+      5. Reject if  tau^2 * sum_{j=r+1}^{d} sigma_j^2(Delta) > c_hat.
+
+    IMPLEMENTATION NOTES, both documented deviations:
+
+    * kappa. The paper suggests kappa_n = n^{-1/4}. Consistency only needs
+      kappa -> 0 and tau*kappa -> infinity, so any positive constant times
+      n^{-1/4} qualifies. A bare n^{-1/4} is NOT scale-equivariant and our
+      Delta is not on a normalised scale (population sigma_1 runs to ~1e4 in
+      raw simulator units), which would force r_hat = r always. We therefore
+      use kappa = sigma_1(Delta) * n^{-1/4}, i.e. the same rate with the
+      constant set by the matrix scale.
+
+    * Bootstrap for M. Nonparametric paired bootstrap over the cells that
+      produced Delta: resample n rows with replacement from Y_e and n from
+      Y_0 independently, recompute Delta*, and recentre. Delta is a smooth
+      function of two sample covariances of iid rows, so this is a consistent
+      bootstrap for M and satisfies their Assumption on the bootstrap.
+
+    The statistic is their phi_r, the SUM of the (d - r) smallest squared
+    singular values, not lam[2] alone.
+
+    Returns (reject, stat, crit, r_hat, kappa).
+    """
+    n, d = Y_e.shape
+    tau = np.sqrt(n)
+
+    # Step 1
+    Delta = np.cov(Y_e, rowvar=False) - np.cov(Y_0, rowvar=False)
+    P, s, Qt = np.linalg.svd(Delta)
+    Q = Qt.T
+
+    # Step 2, eq (9). s is sorted descending, so the max index clearing kappa
+    # is just how many of the first r entries clear it.
+    kappa = float(s[0]) * n ** -0.25
+    r_hat = 0
+    for j in range(min(r, d)):
+        if s[j] >= kappa:
+            r_hat = j + 1
+        else:
+            break
+
+    # Step 4 prep: LAST (d - r_hat) columns span the estimated null space.
+    P2, Q2 = P[:, r_hat:], Q[:, r_hat:]
+    lo = r - r_hat                      # 0-indexed start of j = r-r_hat+1
+
+    # Step 3 + 4
+    boot = np.empty(B)
+    for b in range(B):
+        ie = rng.integers(0, n, n)
+        i0 = rng.integers(0, n, n)
+        Dstar = np.cov(Y_e[ie], rowvar=False) - np.cov(Y_0[i0], rowvar=False)
+        M = tau * (Dstar - Delta)       # recentred fluctuation
+        sv = np.linalg.svd(P2.T @ M @ Q2, compute_uv=False)
+        boot[b] = float(np.sum(sv[lo:] ** 2))
+    crit = float(np.quantile(boot, 1.0 - alpha))
+
+    # Step 5
+    stat = float(tau ** 2 * np.sum(s[r:] ** 2))
+    return bool(stat > crit), stat, crit, int(r_hat), float(kappa)
 
 
 def null_band_from_pool(Yp, n_match, B_null, alpha, rng):
@@ -278,18 +379,19 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
     else:
         band = null_band_from_pool(Yp_all, n_match_eff, B_null, alpha, rng)
 
-    # ---- statistic.
+    # ---- THE DECISION: Chen-Fang, calibrated against the composite null.
+    reject_cf, cf_stat, cf_crit, cf_rhat, cf_kappa = chen_fang_rank_test(
+        Y_e, Y_0, 2, B_null, alpha, rng)
+
     exceed = lam > band
-    # THE DECISION. H0(2) says at most two eigenvalues are non-zero, so the
-    # test is the SINGLE comparison on the third one. One test, so its null
-    # rate is alpha -- unlike the old count over all d eigenvalues, whose
-    # null rate was ~1-(1-alpha)^d because it never controlled multiplicity.
-    reject_rank2 = bool(lam[2] > band[2])
+    # DEPRECATED, retained for exactly one commit so the Gate 1 diff is
+    # auditable against the failing run. This is the zero-signal-band rule
+    # whose rejection rate tracked intervention STRENGTH rather than rank.
+    reject_rank2_zeroband_DEPRECATED = bool(lam[2] > band[2])
 
     # Rank estimate by step-down: walk the sorted spectrum from the top and
-    # stop at the FIRST eigenvalue that fails to clear its band. Eigenvalues
-    # past a non-exceedance do not contribute, which is what separates this
-    # from the deprecated marginal count below.
+    # stop at the FIRST eigenvalue that fails to clear its band. Descriptive
+    # only, and it inherits the zero-signal band's magnitude sensitivity.
     r_hat_stepdown = 0
     for j in range(d):
         if not exceed[j]:
@@ -297,7 +399,12 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
         r_hat_stepdown += 1
 
     return dict(
-        reject_rank2=reject_rank2,
+        reject_rank2_cf=reject_cf,
+        cf_stat=cf_stat,
+        cf_crit=cf_crit,
+        cf_r_hat=cf_rhat,
+        cf_kappa=cf_kappa,
+        reject_rank2_zeroband_DEPRECATED=reject_rank2_zeroband_DEPRECATED,
         r_hat_stepdown=int(r_hat_stepdown),
         lam=lam.tolist(),
         band=band.tolist(),

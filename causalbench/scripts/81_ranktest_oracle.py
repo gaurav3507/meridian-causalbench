@@ -212,7 +212,7 @@ def gate0(n_splits=200, d_set=(5, 10, 20), d_latent=20, D=200, n_env=300,
                     # No null_band= : each split draws its own band.
                     r = rank_diagnostic(Xe, Xb, Xp, d, n_env, b_null, ALPHA, rng,
                                         basis_idx=basis_i, ref_pool_idx=pool_i)
-                    rej.append(r["reject_rank2"])
+                    rej.append(r["reject_rank2_cf"])
                     sd_.append(r["r_hat_stepdown"])
                     exceed[i] = r["exceed"]
 
@@ -320,7 +320,10 @@ def gate1(configs=None, k_set=(1, 2, 3, 5), kinds=("hard", "soft"),
                             seed=seed, kind=kind, k=int(k),
                             nodes=[int(x) for x in nodes],
                             n_sources_hit=int(sum(bool(is_source[i]) for i in nodes)),
-                            reject=bool(r["reject_rank2"]),
+                            reject=bool(r["reject_rank2_cf"]),
+                            reject_zeroband_DEPRECATED=bool(
+                                r["reject_rank2_zeroband_DEPRECATED"]),
+                            cf_r_hat=int(r["cf_r_hat"]),
                             stepdown=int(r["r_hat_stepdown"]),
                             lam=r["lam"][:6], band=r["band"][:6]))
                 print(f"[gate1] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
@@ -359,6 +362,10 @@ def _gate1_summary(runs, k_set, kinds):
                     per_seed_sd[str(s)] = float(np.median(ss)) if ss else None
                 rec = dict(n_runs=len(rej),
                            frac_reject=float(np.mean(rej)),
+                           frac_reject_zeroband_DEPRECATED=float(np.mean(
+                               [r["reject_zeroband_DEPRECATED"] for r in sel])),
+                           cf_r_hat_mean=float(np.mean(
+                               [r["cf_r_hat"] for r in sel])),
                            per_seed_reject_rate=per_seed,
                            stepdown_median=float(np.median(stp)),
                            per_seed_stepdown_median=per_seed_sd)
@@ -434,7 +441,7 @@ def gate2(s_set=(0.0, 0.1, 0.25, 0.5, 1.0), configs=None, b_null=B_NULL,
                                         null_band=band)
                     out["runs"].append(dict(scaling=scaling, d_latent=dl, D=D,
                                             n=n, d=d, seed=seed, s=float(s),
-                                            k=1, reject=bool(r["reject_rank2"]),
+                                            k=1, reject=bool(r["reject_rank2_cf"]),
                                             stepdown=int(r["r_hat_stepdown"]),
                                             lam=r["lam"][:6], band=r["band"][:6]))
                 print(f"[gate2] {scaling:<13} dl={dl} D={D} n={n} seed={seed} done",
@@ -532,8 +539,8 @@ def gate2_s0_reduction(configs=None, b_null=B_NULL):
             lam0 = np.array(vals["mlp_s0"]["lam"])
             lam1 = np.array(vals["linear"]["lam"])
             recs.append(dict(seed=seed, **cfg,
-                             reject_mlp_s0=bool(vals["mlp_s0"]["reject_rank2"]),
-                             reject_linear=bool(vals["linear"]["reject_rank2"]),
+                             reject_mlp_s0=bool(vals["mlp_s0"]["reject_rank2_cf"]),
+                             reject_linear=bool(vals["linear"]["reject_rank2_cf"]),
                              max_abs_lam_diff=float(np.max(np.abs(lam0 - lam1))),
                              identical=bool(np.allclose(lam0, lam1, rtol=1e-9,
                                                         atol=1e-12))))

@@ -255,7 +255,7 @@ def run_block(X, iv, vn, tag, rng, no_drop=False, standardise_cols=False,
             band_cache.setdefault(key, r["band"])
             block["runs"].append(dict(
                 d=d, env=str(g), n_env=int(n_e), n_match=r["n_match"],
-                reject_rank2=bool(r["reject_rank2"]),
+                reject_rank2=bool(r["reject_rank2_cf"]),
                 r_hat_stepdown=int(r["r_hat_stepdown"]),
                 lam=r["lam"], band=r["band"],
                 target_in_columns=bool(g in gidx)))
