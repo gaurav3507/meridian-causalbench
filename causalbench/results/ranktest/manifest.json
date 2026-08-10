@@ -1,108 +1,151 @@
 {
   "lane": "ranktest",
-  "statistic": "reject_rank2_cf = Chen-Fang (2019) composite-null rank test, H0: rank(Delta)<=2",
-  "which_test": "Chen-Fang",
-  "which_test_reason": "their formulation is exactly H0: rank<=r and their regularity conditions hold here (sqrt(n)-asymptotics for a covariance difference of iid rows, consistent nonparametric bootstrap). Leung-Sturma (arXiv 2401.02112) was not needed.",
-  "citation": "Chen, Q. and Z. Fang (2019), Improved inference on the rank of a matrix, Quantitative Economics 10(4) 1787-1824, arXiv:1812.02337. Implementation guide Steps 1-5, equations (9), (10), (11).",
-  "status": "STOPPED AFTER GATE 1 for a decision, per handoff section 4. Gate 2 NOT run. Phase B still refusing.",
-  "acceptance": {
-    "multipliers": [
-      1.0,
-      1.05,
-      1.2,
-      1.5,
-      2.0,
-      3.0
-    ],
-    "cf_reject": [
-      0.0,
-      0.0,
-      0.012,
-      0.04,
-      0.032,
-      0.025
-    ],
-    "old_zeroband_same_runs": [
-      0.06,
-      0.058,
-      0.115,
-      0.182,
-      0.295,
-      0.308
-    ],
-    "n_draws_per_point": 600,
-    "verdict": "FLAT-AT-ALPHA",
-    "note": "CF peaks at 0.040 then falls; it does not climb. Old rule climbs 5x and through alpha."
+  "status": "Task 1 and Task 2 complete. Gate 2 NOT run. Phase B still refusing.",
+  "task1": {
+    "change": "Gate 0 verdict logic: two-sided band -> ONE-SIDED upper check at 0.081",
+    "upper_bound_unchanged": true,
+    "rationale": "rank 0 is where a correct composite-null test is exact or conservative; Chen-Fang predicts conservatism there because the bootstrap projects onto an ESTIMATED null space whose rank generally exceeds the true rank at rank 0",
+    "gate0_verdict_kappa_era": "PASS",
+    "gate0_verdict_final": "PASS"
   },
-  "gate0": {
-    "pooled": {
-      "raw|d=5": 0.0095,
-      "raw|d=10": 0.0095,
-      "raw|d=20": 0.009,
-      "standardised|d=5": 0.006,
-      "standardised|d=10": 0.0035000000000000005,
-      "standardised|d=20": 0.003
+  "task2": {
+    "change": "kappa-tuned r_hat (eq 9, CF-A) -> tuning-free sequential r_hat (eq C.1, CF-T)",
+    "beta": "alpha/10 = 0.005 (MY choice; CF-T only requires 0<beta<alpha; paper prescribes none)",
+    "deviation": "implemented Appendix C eq (C.1) bootstrap sequential estimator, NOT a KP-based one; KP would need a fourth-moment variance estimator for vec(Delta) that is itself unvalidated",
+    "outcome": "1a REGRESSED, did not improve",
+    "k1_kappa": {
+      "raw_hard": 0.113,
+      "raw_soft": 0.013,
+      "std_hard": 0.113,
+      "std_soft": 0.037
     },
-    "verdict_as_coded": "FAIL",
-    "any_cell_above_band": false,
-    "reading": "every cell is BELOW [0.019,0.081], none above. The handoff's stop condition is ABOVE (anti-conservative bootstrap); it also states a correct composite-null test is exact or conservative at rank 0, which is what was observed."
-  },
-  "gate1": {
-    "verdict_1a": "FAIL (hard only)",
-    "verdict_1b": "FAIL (soft only)",
-    "k1": {
-      "raw|hard": 0.1125,
-      "raw|soft": 0.0125,
-      "standardised|hard": 0.1125,
-      "standardised|soft": 0.0375
+    "k1_cft": {
+      "raw_hard": 0.225,
+      "raw_soft": 0.225,
+      "std_hard": 0.125,
+      "std_soft": 0.2
     },
-    "k3": {
-      "raw|hard": 0.9875,
-      "raw|soft": 0.4625,
-      "standardised|hard": 0.9875,
-      "standardised|soft": 0.4375
+    "mechanism": "r_hat UNDER-selection, not the new r_hat>r outright-rejection rule (1/28 hard, 0/34 soft rejections came from it). CF-T r_hat at k=1 soft is 0 in 108/160 runs; kappa never returned 0 because it was capped at 2 by construction. Rejection falls monotonically with r_hat: 0.298 at r_hat=0, 0.159 at 1, 0.093 at 2.",
+    "beta_sweep": {
+      "beta": [
+        0.005,
+        0.01,
+        0.025,
+        0.045
+      ],
+      "reject_hard": [
+        0.1,
+        0.1,
+        0.05,
+        0.05
+      ],
+      "reject_soft": [
+        0.15,
+        0.15,
+        0.1,
+        0.05
+      ],
+      "r_hat_correct_hard": [
+        0.85,
+        0.85,
+        0.9,
+        0.9
+      ],
+      "r_hat_correct_soft": [
+        0.3,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "reading": "larger beta lowers rejection only via the 1-alpha+beta second-stage quantile; r_hat accuracy is FLAT in beta, so this is mechanical conservatism, not a fix"
     },
-    "shift": {
-      "raw|shift": 0.0,
-      "standardised|shift": 0.0
-    },
-    "interior_vs_boundary": {
-      "hard_source_true_rank1_interior": {
-        "n": 16,
-        "reject": 0.0
+    "residual_boundary_excess": {
+      "hard_boundary_true_rank2_rhat_correct": {
+        "n": 106,
+        "reject": 0.094
       },
-      "hard_nonsource_true_rank2_boundary": {
-        "n": 144,
-        "reject": 0.125
+      "hard_boundary_true_rank2_rhat_under": {
+        "n": 37,
+        "reject": 0.459
       },
-      "soft_true_rank1_interior": 0.025
-    },
-    "rhat_effect": {
-      "reject_when_rhat1": 0.18181818181818182,
-      "reject_when_rhat2": 0.09448818897637795
-    },
-    "diagnosis": "CF holds its level in the INTERIOR of H0(2) (true rank <= 1): 0.000 hard-on-source, 0.025 soft. It over-rejects only at the BOUNDARY (true rank exactly 2): 0.125. Two contributors: the tuning parameter kappa under-estimates r_hat (reject 0.182 when r_hat=1 vs 0.094 when r_hat=2), and a residual boundary excess remains even when r_hat is correct. Chen-Fang themselves note kappa is a tuning parameter and recommend the tuning-free sequential KP-based estimator instead.",
-    "soft_power_curve": {
-      "n_e": [
-        500,
-        2000,
-        8000,
-        20000
-      ],
-      "reject_raw": [
-        0.5,
-        0.7,
-        1.0,
-        1.0
-      ],
-      "reject_std": [
-        0.6,
-        0.7,
-        1.0,
-        1.0
-      ],
-      "verdict": "power problem that n fixes, not a structural inability"
+      "soft_interior_true_rank1_rhat_correct": {
+        "n": 51,
+        "reject": 0.059
+      },
+      "soft_interior_true_rank1_rhat_under": {
+        "n": 108,
+        "reject": 0.287
+      },
+      "answer": "YES. A residual boundary excess survives correct r_hat selection: 0.094 vs nominal 0.05 at the rank-2 boundary with r_hat=2. At the interior with correct r_hat the test is exact (0.059)."
     }
+  },
+  "gate0_final": {
+    "raw|d=5": {
+      "pooled": 0.031000000000000007,
+      "max_seed": 0.085,
+      "seeds_above_upper": 1
+    },
+    "raw|d=10": {
+      "pooled": 0.029500000000000005,
+      "max_seed": 0.09,
+      "seeds_above_upper": 2
+    },
+    "raw|d=20": {
+      "pooled": 0.029500000000000005,
+      "max_seed": 0.085,
+      "seeds_above_upper": 2
+    },
+    "standardised|d=5": {
+      "pooled": 0.026500000000000003,
+      "max_seed": 0.075,
+      "seeds_above_upper": 0
+    },
+    "standardised|d=10": {
+      "pooled": 0.027000000000000003,
+      "max_seed": 0.08,
+      "seeds_above_upper": 0
+    },
+    "standardised|d=20": {
+      "pooled": 0.026500000000000003,
+      "max_seed": 0.08,
+      "seeds_above_upper": 0
+    }
+  },
+  "gate1_final": {
+    "curve": {
+      "raw|hard": {
+        "1": 0.225,
+        "2": 0.8875,
+        "3": 0.9875,
+        "5": 1.0
+      },
+      "raw|soft": {
+        "1": 0.225,
+        "2": 0.2875,
+        "3": 0.475,
+        "5": 0.6875
+      },
+      "raw|shift": {
+        "1": 0.025
+      },
+      "standardised|hard": {
+        "1": 0.125,
+        "2": 0.9,
+        "3": 0.9875,
+        "5": 1.0
+      },
+      "standardised|soft": {
+        "1": 0.2,
+        "2": 0.25,
+        "3": 0.4375,
+        "5": 0.725
+      },
+      "standardised|shift": {
+        "1": 0.0375
+      }
+    },
+    "verdict_1a": "FAIL",
+    "verdict_1b": "FAIL"
   },
   "gate2": "NOT RUN",
   "environment": {
