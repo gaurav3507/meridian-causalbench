@@ -43,6 +43,7 @@ SIMULATOR NOTES
             rather than hidden.
 """
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -65,6 +66,7 @@ def _load(path, name):
     return mod
 
 
+RIO = _load(HERE / "84_results_io.py", "_results_io")
 CORE = _load(HERE / "80_ranktest_core.py", "_ranktest_core")
 rank_diagnostic = CORE.rank_diagnostic
 null_band_from_pool = CORE.null_band_from_pool
@@ -74,13 +76,36 @@ standardise = CORE.standardise
 
 
 # ------------------------------------------------------------------ writing
-def write_json(name, obj):
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    path = RESULTS / name
-    tmp = str(path) + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=2)
-    os.rename(tmp, path)
+STATISTIC = "lfc"          # the statistic these gates currently exercise
+
+
+def write_json(name, obj, gate=None, statistic=STATISTIC, suffix=""):
+    """Write through the schema gate: no meta block, no file.
+
+    Results go to <statistic>/<gate>/<timestamp>.json. 84_results_io refuses
+    anything missing a mandatory meta field, so a gate result can no longer be
+    written without recording which statistic, commit and config produced it.
+    """
+    gate = gate or Path(name).stem.split("_")[0]
+    ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    c = obj.get("config") or {}
+    cfgs = c.get("configs") or []
+    config = dict(
+        alpha=c.get("alpha", ALPHA),
+        B=c.get("B_null", B_NULL),
+        n_e=sorted({x.get("n") for x in cfgs if isinstance(x, dict)}) or None,
+        d=c.get("d_set", c.get("d")),
+        d_latent=(c.get("d_latent")
+                  or sorted({x.get("d_latent") for x in cfgs if isinstance(x, dict)})
+                  or None),
+        D=(c.get("D") or sorted({x.get("D") for x in cfgs if isinstance(x, dict)})
+           or None),
+        n_env=c.get("n_env"),
+        seeds=c.get("seeds", SEEDS),
+        draws_per_point=c.get("n_splits"),
+    )
+    meta = RIO.make_meta(statistic, gate, ts, config, status="CURRENT")
+    path = RIO.write_results(obj, meta, suffix=suffix)
     print(f"[write] {path}", flush=True)
     return path
 
@@ -664,7 +689,7 @@ def main():
 
     if a.gate == "0":
         res = gate0(n_splits=a.splits, b_null=a.b_null)
-        write_json(f"gate0{a.tag}.json", res)
+        write_json(f"gate0{a.tag}.json", res, gate="gate0")
         print(f"\nGATE 0 VERDICT: {res['verdict']}", flush=True)
         print(f"  ONE-SIDED upper check: no cell may exceed "
               f"{res['upper_bound']:.3f}; below is expected and passes",
@@ -680,7 +705,7 @@ def main():
                   f"{[round(x,3) for x in s['fpr_reject_rank2_per_seed']]}", flush=True)
     elif a.gate == "1":
         res = gate1(b_null=a.b_null)
-        write_json(f"gate1{a.tag}.json", res)
+        write_json(f"gate1{a.tag}.json", res, gate="gate1")
         print(f"\nGATE 1a (INTERIOR of H0(2) only, <= alpha): {res['verdict_1a']}",
               flush=True)
         for key, v in res["interior_k1"].items():
@@ -725,10 +750,10 @@ def main():
                   flush=True)
 
         red = gate2_s0_reduction(b_null=a.b_null)
-        write_json(f"gate2_s0_reduction{a.tag}.json", red)
+        write_json(f"gate2_s0_reduction{a.tag}.json", red, gate="gate2", suffix="__s0_reduction")
         res = gate2(b_null=a.b_null, linear_k3_reject=comp)
         res["s0_reduction"] = red
-        write_json(f"gate2{a.tag}.json", res)
+        write_json(f"gate2{a.tag}.json", res, gate="gate2")
         for scaling, k in res["summary"]["kill_criterion"].items():
             print(f"\nGATE 2 {scaling}: k=1 reject at s=0.25 = {k['k1_reject_at_s025']}, "
                   f"linear k=3 = {k['linear_k3_reject']}  -> KILL "

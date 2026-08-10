@@ -53576,5 +53576,53 @@
   "criteria": {
     "v1a": "k=1 rejects in <= 5% of runs (validity == FPR)",
     "v1b": "k=3 rejects in >= 80% of runs (power)"
+  },
+  "meta": {
+    "statistic": "cft",
+    "gate": "gate1",
+    "git_commit": "1215e56",
+    "timestamp": "2026-08-10T09:43:05",
+    "config": {
+      "alpha": 0.05,
+      "B": 500,
+      "n_e": [
+        500,
+        2000
+      ],
+      "d": null,
+      "d_latent": [
+        10,
+        20
+      ],
+      "D": [
+        200,
+        1000
+      ],
+      "n_env": null,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draws_per_point": null
+    },
+    "versions": {
+      "python": "3.11.15",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "3.0.3",
+      "sklearn": "1.9.0"
+    },
+    "superseded_by": null,
+    "migrated_from": "git:1215e56:causalbench/results/ranktest/gate1_CFT.json",
+    "status": "HISTORICAL-FOR-COMPARISON-TABLE",
+    "note": "tuning-free sequential r_hat; 1a REGRESSED to 0.225/0.225 because r_hat under-selected (r_hat=0 in 108 of 160 k=1 soft runs)"
   }
 }

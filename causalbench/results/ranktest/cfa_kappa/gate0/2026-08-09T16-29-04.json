@@ -1454,7 +1454,6 @@
     0.01917792998515512,
     0.08082207001484489
   ],
-  "upper_bound": 0.08082207001484489,
   "summary": [
     {
       "scaling": "raw",
@@ -1471,7 +1470,6 @@
         0.01,
         0.005
       ],
-      "fpr_reject_rank2_pooled": 0.0095,
       "fpr_reject_rank2_median": 0.01,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1484,10 +1482,6 @@
       "marginal_min": 0.033,
       "marginal_max": 0.05500000000000001,
       "predicted_indep_gt0": 0.22621906250000023,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.03,
       "all_seeds_in_band": false
     },
     {
@@ -1505,7 +1499,6 @@
         0.01,
         0.005
       ],
-      "fpr_reject_rank2_pooled": 0.0095,
       "fpr_reject_rank2_median": 0.0075,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1523,10 +1516,6 @@
       "marginal_min": 0.030000000000000006,
       "marginal_max": 0.05750000000000001,
       "predicted_indep_gt0": 0.4012630607616213,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.03,
       "all_seeds_in_band": false
     },
     {
@@ -1544,7 +1533,6 @@
         0.01,
         0.005
       ],
-      "fpr_reject_rank2_pooled": 0.009,
       "fpr_reject_rank2_median": 0.0075,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1572,10 +1560,6 @@
       "marginal_min": 0.030500000000000006,
       "marginal_max": 0.06400000000000002,
       "predicted_indep_gt0": 0.6415140775914581,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.03,
       "all_seeds_in_band": false
     },
     {
@@ -1593,7 +1577,6 @@
         0.01,
         0.005
       ],
-      "fpr_reject_rank2_pooled": 0.006,
       "fpr_reject_rank2_median": 0.0025,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1606,10 +1589,6 @@
       "marginal_min": 0.0325,
       "marginal_max": 0.05600000000000001,
       "predicted_indep_gt0": 0.22621906250000023,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.03,
       "all_seeds_in_band": false
     },
     {
@@ -1627,7 +1606,6 @@
         0.0,
         0.0
       ],
-      "fpr_reject_rank2_pooled": 0.0035000000000000005,
       "fpr_reject_rank2_median": 0.0,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1645,10 +1623,6 @@
       "marginal_min": 0.0315,
       "marginal_max": 0.05500000000000001,
       "predicted_indep_gt0": 0.4012630607616213,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.025,
       "all_seeds_in_band": false
     },
     {
@@ -1666,7 +1640,6 @@
         0.0,
         0.0
       ],
-      "fpr_reject_rank2_pooled": 0.003,
       "fpr_reject_rank2_median": 0.0,
       "stepdown_median": 0.0,
       "marginal_per_j_mean": [
@@ -1694,15 +1667,52 @@
       "marginal_min": 0.03,
       "marginal_max": 0.0605,
       "predicted_indep_gt0": 0.6415140775914581,
-      "cell_above_upper": false,
-      "cell_below_lower": true,
-      "n_seeds_above_upper": 0,
-      "max_seed": 0.02,
       "all_seeds_in_band": false
     }
   ],
-  "verdict": "PASS",
-  "pass_criterion": "ONE-SIDED: no cell's pooled reject_rank2 rate exceeds 0.081 (alpha=0.05 + 2 Monte-Carlo SE). Below-band is expected and passes: Chen-Fang predicts conservatism at the rank-0 boundary.",
-  "n_cells_above_upper": 0,
-  "n_cells_below_lower": 6
+  "verdict": "FAIL",
+  "pass_criterion": "reject_rank2 rate inside [0.019, 0.081] (alpha=0.05 +/- 2 Monte-Carlo SE) on every seed and every d",
+  "meta": {
+    "statistic": "cfa_kappa",
+    "gate": "gate0",
+    "git_commit": "4bd658a",
+    "timestamp": "2026-08-09T16:29:04",
+    "config": {
+      "alpha": 0.05,
+      "B": 500,
+      "n_e": null,
+      "d": [
+        5,
+        10,
+        20
+      ],
+      "d_latent": 20,
+      "D": 200,
+      "n_env": 300,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draws_per_point": 200
+    },
+    "versions": {
+      "python": "3.11.15",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "3.0.3",
+      "sklearn": "1.9.0"
+    },
+    "superseded_by": null,
+    "migrated_from": "git:4bd658a:causalbench/results/ranktest/gate0.json",
+    "status": "HISTORICAL-FOR-COMPARISON-TABLE",
+    "note": "Chen-Fang CF-A with kappa-tuned r_hat"
+  }
 }
