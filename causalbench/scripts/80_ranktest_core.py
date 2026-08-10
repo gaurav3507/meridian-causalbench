@@ -163,7 +163,7 @@ def _two_disjoint(n_pool, n_match, rng):
     return take[:n_match], take[n_match:]
 
 
-def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng):
+def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng, beta=None):
     """Chen-Fang composite-null-calibrated test of H0: rank(Delta) <= r.
 
     Chen, Q. and Z. Fang (2019), "Improved inference on the rank of a matrix",
@@ -183,72 +183,128 @@ def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng):
     the dependence that made our rejection rate climb from 0.083 to 0.322 as
     the intervention strengthened while the true rank stayed 1.
 
-    Steps, in their numbering:
-      1. SVD  Delta = P S Q'.
-      2. r_hat = max{j = 1..r : sigma_j(Delta) >= kappa}, else 0        (eq 9)
-      3. Bootstrap B copies of M* = tau * (Delta* - Delta).
-      4. P2, Q2 = last (d - r_hat) columns of P, Q. The critical value is the
-         (1-alpha) quantile of  sum_{j=r-r_hat+1}^{d-r_hat} sigma_j^2(P2' M* Q2)
-                                                                      (eq 11)
-      5. Reject if  tau^2 * sum_{j=r+1}^{d} sigma_j^2(Delta) > c_hat.
+    THIS IS CF-T, THE TWO-STEP TUNING-FREE VARIANT, not the kappa-tuned CF-A.
+    The paper introduces CF-T precisely because it is "unable to provide an
+    optimal choice of kappa_n", and Appendix C formalises a sequential rank
+    estimator that needs no tuning parameter at all:
 
-    IMPLEMENTATION NOTES, both documented deviations:
+      STEP 1  r_hat = min{ rr = 0..d-1 : tau^2 phi_rr(Delta) <= c_{1-beta}(rr) }
+              and d if that set is empty.                            (eq C.1)
+              At hypothesised rank rr the null space is (d-rr)-dimensional,
+              so c_{1-beta}(rr) projects M* onto the last (d-rr) columns and
+              sums ALL squared singular values of that block.
+      STEP 2  If r_hat > r, reject H0 outright.
+              Otherwise plug r_hat into (10)/(11) and reject if
+              tau^2 phi_r(Delta) > c_{1-alpha+beta}, the adjusted quantile
+              that buys back the beta spent selecting r_hat, leaving the
+              overall level at alpha.
 
-    * kappa. The paper suggests kappa_n = n^{-1/4}. Consistency only needs
-      kappa -> 0 and tau*kappa -> infinity, so any positive constant times
-      n^{-1/4} qualifies. A bare n^{-1/4} is NOT scale-equivariant and our
-      Delta is not on a normalised scale (population sigma_1 runs to ~1e4 in
-      raw simulator units), which would force r_hat = r always. We therefore
-      use kappa = sigma_1(Delta) * n^{-1/4}, i.e. the same rate with the
-      constant set by the matrix scale.
+    WHY THE SWAP. The kappa-tuned version (eq 9) under-estimated r_hat at the
+    rank-2 boundary in Gate 1: k=1 hard runs with r_hat=1 rejected at 0.182
+    against 0.094 where r_hat=2 was correct, driving a 0.125 boundary
+    over-rejection against a nominal 0.05.
+
+    WHY THIS FIXES THE MAGNITUDE PROBLEM (unchanged from CF-A). The bootstrap
+    projects the recentred fluctuation M* onto the ESTIMATED null space before
+    reading singular values, so the critical value depends on the data through
+    null-space DIRECTIONS and not through the magnitude of the signal singular
+    values. That is the dependence which made our own retired rule climb from
+    0.083 to 0.322 as the intervention strengthened while true rank stayed 1.
+
+    IMPLEMENTATION NOTES:
+
+    * beta. Required by CF-T, which asks for some beta < alpha. The paper
+      does not prescribe a value; beta = alpha/10 is used here. THIS IS A
+      CHOSEN CONSTANT, not one taken from the paper. It is a significance
+      level rather than a bandwidth, so unlike kappa it does not need to be
+      tied to the scale of Delta, but it is still a choice and any result
+      should be checked for sensitivity to it.
+
+    * Sequential test. The paper notes the KP test "may be utilized and is
+      recommended as it is tuning parameter free and does not require
+      additional simulations". KP would need a consistent estimate of the
+      asymptotic variance of vec(Delta), i.e. fourth moments of the cells,
+      which is a substantial new estimator to validate. Appendix C's own
+      bootstrap-based sequential procedure is equally tuning-free and reuses
+      machinery already validated by the acceptance sweep, so eq (C.1) is
+      what is implemented. This is a deviation from "KP-based".
 
     * Bootstrap for M. Nonparametric paired bootstrap over the cells that
       produced Delta: resample n rows with replacement from Y_e and n from
       Y_0 independently, recompute Delta*, and recentre. Delta is a smooth
-      function of two sample covariances of iid rows, so this is a consistent
-      bootstrap for M and satisfies their Assumption on the bootstrap.
+      function of two sample covariances of iid rows, so this is consistent
+      for M. ONE sample of M* is drawn and reused across the sequential steps
+      and the final test.
 
     The statistic is their phi_r, the SUM of the (d - r) smallest squared
     singular values, not lam[2] alone.
 
-    Returns (reject, stat, crit, r_hat, kappa).
+    Returns (reject, stat, crit, r_hat, beta, r_hat_trace).
+    crit is nan when step 2 rejected outright on r_hat > r.
     """
     n, d = Y_e.shape
     tau = np.sqrt(n)
+    beta = alpha / 10.0 if beta is None else float(beta)
+    if not (0.0 < beta < alpha):
+        raise ValueError(f"need 0 < beta < alpha, got beta={beta}, alpha={alpha}")
 
-    # Step 1
+    # Step 1: SVD of the observed covariance difference.
     Delta = np.cov(Y_e, rowvar=False) - np.cov(Y_0, rowvar=False)
     P, s, Qt = np.linalg.svd(Delta)
     Q = Qt.T
 
-    # Step 2, eq (9). s is sorted descending, so the max index clearing kappa
-    # is just how many of the first r entries clear it.
-    kappa = float(s[0]) * n ** -0.25
-    r_hat = 0
-    for j in range(min(r, d)):
-        if s[j] >= kappa:
-            r_hat = j + 1
-        else:
-            break
+    def phi(rr):
+        """tau^2 * sum_{j=rr+1}^{d} sigma_j^2(Delta), their phi_r."""
+        return float(tau ** 2 * np.sum(s[rr:] ** 2))
 
-    # Step 4 prep: LAST (d - r_hat) columns span the estimated null space.
-    P2, Q2 = P[:, r_hat:], Q[:, r_hat:]
-    lo = r - r_hat                      # 0-indexed start of j = r-r_hat+1
-
-    # Step 3 + 4
-    boot = np.empty(B)
-    for b in range(B):
+    # ONE bootstrap sample of the recentred fluctuation M*, reused for the
+    # sequential rank steps AND the final test. The paper draws M* once and
+    # reads different functionals off it; reusing it here is both faithful
+    # and much cheaper, since the two covariance recomputations dominate.
+    Ms = []
+    for _ in range(B):
         ie = rng.integers(0, n, n)
         i0 = rng.integers(0, n, n)
         Dstar = np.cov(Y_e[ie], rowvar=False) - np.cov(Y_0[i0], rowvar=False)
-        M = tau * (Dstar - Delta)       # recentred fluctuation
-        sv = np.linalg.svd(P2.T @ M @ Q2, compute_uv=False)
-        boot[b] = float(np.sum(sv[lo:] ** 2))
-    crit = float(np.quantile(boot, 1.0 - alpha))
+        Ms.append(tau * (Dstar - Delta))
 
-    # Step 5
-    stat = float(tau ** 2 * np.sum(s[r:] ** 2))
-    return bool(stat > crit), stat, crit, int(r_hat), float(kappa)
+    def crit_at(rr, level, lo):
+        """(1-level) quantile of sum_{j=lo+1}^{d-rr} sigma_j^2(P2' M* Q2)."""
+        P2, Q2 = P[:, rr:], Q[:, rr:]
+        boot = np.empty(B)
+        for b, M in enumerate(Ms):
+            sv = np.linalg.svd(P2.T @ M @ Q2, compute_uv=False)
+            boot[b] = float(np.sum(sv[lo:] ** 2))
+        return float(np.quantile(boot, 1.0 - level))
+
+    # ---- CF-T STEP 1: tuning-free sequential rank estimator, eq (C.1).
+    #   r_hat = min{ rr = 0..d-1 : tau^2 phi_rr(Delta) <= c_{1-beta}(rr) },
+    #   and d if the set is empty.
+    # At the hypothesised rank rr the null space is (d-rr)-dimensional, so the
+    # projection uses the last (d-rr) columns and ALL squared singular values
+    # of that block (lo=0). No kappa anywhere. The loop breaks at the first
+    # non-rejection, so it normally costs 1-3 extra small SVD passes.
+    r_hat, r_hat_crits = d, []
+    for rr in range(d):
+        c = crit_at(rr, beta, 0)
+        r_hat_crits.append((rr, phi(rr), c))
+        if phi(rr) <= c:
+            r_hat = rr
+            break
+
+    # ---- CF-T STEP 2.
+    if r_hat > r:
+        # The estimated rank already exceeds the hypothesised one, so H0 is
+        # rejected outright without consulting the second-stage critical
+        # value. This branch does not exist in the kappa-tuned CF-A test.
+        return True, phi(r), float("nan"), int(r_hat), float(beta), r_hat_crits
+
+    # Plug r_hat into (10)/(11) and test at the ADJUSTED quantile 1-alpha+beta,
+    # which buys back the beta spent selecting r_hat so the overall level is
+    # alpha.
+    crit = crit_at(r_hat, alpha - beta, r - r_hat)
+    stat = phi(r)
+    return bool(stat > crit), stat, crit, int(r_hat), float(beta), r_hat_crits
 
 
 def null_band_from_pool(Yp, n_match, B_null, alpha, rng):
@@ -377,9 +433,22 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
     else:
         band = null_band_from_pool(Yp_all, n_match_eff, B_null, alpha, rng)
 
-    # ---- THE DECISION: Chen-Fang, calibrated against the composite null.
-    reject_cf, cf_stat, cf_crit, cf_rhat, cf_kappa = chen_fang_rank_test(
+    # ---- THE DECISION: Chen-Fang CF-T, calibrated against the composite null.
+    reject_cf, cf_stat, cf_crit, cf_rhat, cf_beta, cf_trace = chen_fang_rank_test(
         Y_e, Y_0, 2, B_null, alpha, rng)
+
+    # The retired kappa-tuned rank estimate, eq (9), recomputed for free off
+    # the same spectrum. Recorded ONLY so the 1a boundary diff is auditable:
+    # it is not used in any decision.
+    _s = np.sort(np.abs(np.linalg.eigvalsh(
+        np.cov(Y_e, rowvar=False) - np.cov(Y_0, rowvar=False))))[::-1]
+    _kappa = float(_s[0]) * n_match_eff ** -0.25
+    cf_rhat_kappa = 0
+    for _j in range(2):
+        if _s[_j] >= _kappa:
+            cf_rhat_kappa = _j + 1
+        else:
+            break
 
     exceed = lam > band
 
@@ -397,7 +466,9 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
         cf_stat=cf_stat,
         cf_crit=cf_crit,
         cf_r_hat=cf_rhat,
-        cf_kappa=cf_kappa,
+        cf_beta=cf_beta,
+        cf_r_hat_kappa_RETIRED=int(cf_rhat_kappa),
+        cf_rejected_on_rhat=bool(cf_rhat > 2),
         r_hat_stepdown=int(r_hat_stepdown),
         lam=lam.tolist(),
         band=band.tolist(),
