@@ -381,19 +381,34 @@ SELFTEST_SEED = 20260810
 SELFTEST_N, SELFTEST_P, SELFTEST_K = 1500, 60, 7
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER -- NOT YET PINNED.  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-# These are the reference values the A100 must reproduce. They are DELIBERATELY
-# None until Gaurav runs --selftest on the Mac and supplies the numbers to
-# embed here. While they are None the selftest does NOT pass: it prints a
-# copy-paste block and exits 2, so an unpinned gate can never be mistaken for a
-# green one.
+# PINNED 2026-08-10 from the Mac reference run. Values supplied by Gaurav.
+#
+# REFERENCE ENVIRONMENT -- these constants are only meaningful against it:
+#     platform : Darwin-arm64-py3.11.15
+#     blas     : accelerate
+#     numpy    : 2.4.6       scipy  : 1.17.1
+#     sklearn  : 1.9.0       scanpy : None
+#
+# REFERENCE DATA -- seed 20260810, n=1500, p=60, k=7:
+#     fingerprint sum   = 89.21218271641769
+#     fingerprint sumsq = 38614.541326876846
+#
+# The FINGERPRINT IS CHECKED FIRST. If it differs, the generated data is not
+# the same on this machine, and comparing the estimators would be meaningless:
+# that is numpy's Generator stream or the QR sign convention having moved,
+# which is a different failure from a BLAS difference in the SVD. Only once the
+# bytes match does an estimator mismatch point at the linear-algebra backend.
 SELFTEST_EXPECTED = {
-    "participation_ratio": None,                  # float, tol 1e-8
-    "effective_rank_exp_spectral_entropy": None,  # float, tol 1e-8
-    "n_components_for_variance": None,            # dict of ints, EXACT
+    "participation_ratio": 4.384526709282313,                  # float, tol 1e-8
+    "effective_rank_exp_spectral_entropy": 5.251113410324093,  # float, tol 1e-8
+    "n_components_for_variance": {'80pct': 4, '90pct': 5, '95pct': 5},  # EXACT
 }
-SELFTEST_TOL = 1e-8
-# END PLACEHOLDER  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+SELFTEST_FINGERPRINT = {          # None disables the check; both must be set
+    "sum": 89.21218271641769,
+    "sumsq": 38614.541326876846,
+}
+SELFTEST_TOL = 1e-8        # estimators: absolute, as specified
+SELFTEST_FP_RTOL = 1e-12   # fingerprint: RELATIVE, see the note at its check
 # ---------------------------------------------------------------------------
 
 
@@ -440,7 +455,37 @@ def run_selftest():
               f'{got["effective_rank_exp_spectral_entropy"]!r},')
         print(f'    "n_components_for_variance": {got["n_components_for_variance"]!r},')
         print("}")
+        print("SELFTEST_FINGERPRINT = {")
+        print(f'    "sum": {fp["sum"]!r},')
+        print(f'    "sumsq": {fp["sumsq"]!r},')
+        print("}")
         return 2
+
+    # ---- data first. A fingerprint mismatch means the two machines were not
+    # even handed the same bytes, so comparing estimators would attribute a
+    # data-generation difference to the linear algebra backend.
+    # RELATIVE tolerance here, unlike the estimators. The estimators are O(1-10)
+    # so the specified absolute 1e-8 is right for them, but sumsq is ~3.9e4 and
+    # an absolute 1e-8 would sit below the float64 summation-order noise floor
+    # (~4e-8 at that magnitude), turning a reordered reduction into a spurious
+    # data-mismatch. A genuine data difference is relatively enormous, so
+    # rtol=1e-12 catches it with margin to spare.
+    if SELFTEST_FINGERPRINT.get("sum") is not None:
+        fp_bad = [(k, SELFTEST_FINGERPRINT[k], fp[k])
+                  for k in ("sum", "sumsq")
+                  if not np.isclose(float(fp[k]), float(SELFTEST_FINGERPRINT[k]),
+                                    rtol=SELFTEST_FP_RTOL, atol=0.0)]
+        if fp_bad:
+            print("\n  SELFTEST FAILED ON THE DATA FINGERPRINT:")
+            for k, exp, act in fp_bad:
+                rel = abs(float(act) - float(exp)) / max(abs(float(exp)), 1e-300)
+                print(f"    {k}: expected {exp!r} got {act!r} "
+                      f"rel={rel:.3e} > rtol {SELFTEST_FP_RTOL:g}")
+            print("\n  The generated data itself differs, so this is NOT a BLAS")
+            print("  or estimator difference. numpy's Generator stream or the QR")
+            print("  sign convention has moved between these environments.")
+            print("  Estimator comparison skipped: it would be meaningless.")
+            return 1
 
     fails = []
     for key, tol_exact in (("participation_ratio", False),
