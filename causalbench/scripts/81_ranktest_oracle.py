@@ -348,7 +348,6 @@ def gate1(configs=None, k_set=(1, 2, 3, 5), kinds=("hard", "soft"),
                             n_sources_hit=int(sum(bool(is_source[i]) for i in nodes)),
                             reject=bool(r["reject_rank2_cf"]),
                             cf_r_hat=int(r["cf_r_hat"]),
-                            cf_r_hat_kappa_RETIRED=int(r["cf_r_hat_kappa_RETIRED"]),
                             cf_rejected_on_rhat=bool(r["cf_rejected_on_rhat"]),
                             stepdown=int(r["r_hat_stepdown"]),
                             lam=r["lam"][:6], band=r["band"][:6]))

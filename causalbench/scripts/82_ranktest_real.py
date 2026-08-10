@@ -11,24 +11,22 @@ claim. This is the second-order complement to the mean-shift screen in
 03_screen.py, not a replacement for it.
 
 =============================================================================
-THIS SCRIPT REFUSES TO RUN WHILE GATE 0 IS FAILING.
+THIS SCRIPT REFUSES TO RUN UNLESS BOTH GATE 0 AND GATE 1 READ PASS.
 =============================================================================
-Gate 0 (calibration, 81_ranktest_oracle.py) currently FAILS: on pure control
-data with no intervention anywhere, r_hat > 0 fires at 1-(1-alpha)^d rather
-than alpha, because r_hat sums d marginal level-alpha tests with no
-multiplicity control. Its null distribution is approximately Binomial(d,
-alpha), not a point mass at 0. The falsification event r_hat > 2 inherits
-this: measured false-rejection rates on data with NO intervention were 0.000
-at d=5, 0.015 at d=10 and 0.090 at d=20.
+require_gates_pass() below reads BOTH gate JSONs and aborts unless Gate 0,
+Gate 1a and Gate 1b all read PASS. Do not bypass it.
 
-require_gate0_pass() below reads the Gate 0 JSON and aborts unless the
-verdict is PASS. Do not bypass it. Every number this script could produce
-today would carry that uncalibrated false-rejection rate, which at d=20 means
-roughly one environment in eleven is falsely called a bundle violation.
+Gate 0 alone was never sufficient, and relying on it alone was a real defect
+in this file: Gate 0 fixes the level at true rank ZERO only, while the
+operating null H0(2) is COMPOSITE. Two statistics have already passed Gate 0
+and then failed Gate 1, each for a different reason:
+  * the zero-signal-band rule rejected on intervention STRENGTH rather than
+    rank, running to 4-9x nominal at k=1;
+  * the tuning-free CF-T rank estimator under-selected r_hat and rejected at
+    up to 0.225 at k=1 where the bundle HOLDS.
 
-When the statistic is fixed, the rank_diagnostic call sites here do not
-change, but the READOUT does, so re-read the interpretation of r_hat before
-quoting anything from this script.
+STATUS AT LAST RUN: Gate 0 PASS, Gate 1a FAIL, Gate 1b FAIL. This script
+therefore refuses. Do not quote any number from it until that changes.
 
 DATA HANDLING -- inherited, not rediscovered
 --------------------------------------------
@@ -83,6 +81,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE.parent / "results" / "ranktest"
 GATE0_JSON = RESULTS / "gate0.json"
+GATE1_JSON = RESULTS / "gate1.json"
 
 CTRL_LABEL = "non-targeting"
 D_SET = (5, 10, 20)
@@ -113,27 +112,56 @@ standardise = CORE.standardise
 REF_SPLIT_FACTOR = CORE.REF_SPLIT_FACTOR
 
 
-# --------------------------------------------------------------- gate 0 lock
-def require_gate0_pass(force_flag=False):
+# ----------------------------------------------------------- gate 0 + 1 lock
+def require_gates_pass(force_flag=False):
+    """Refuse unless BOTH Gate 0 and Gate 1 read PASS.
+
+    Gate 0 alone is not sufficient and never was. Gate 0 fixes the level at
+    true rank ZERO only. The operating null H0(2) is COMPOSITE and also
+    contains rank-1 and rank-2 signals of arbitrary magnitude, and Gate 1 at
+    k=1 is the only thing that probes those. A statistic can pass Gate 0 and
+    still reject on intervention STRENGTH rather than intervention RANK --
+    that is exactly what happened to the retired zero-signal-band rule, which
+    passed Gate 0 and then failed Gate 1 at 4 to 9 times nominal.
+
+    Gate 1 has two verdicts and BOTH must pass:
+      verdict_1a  validity at k=1. Failing this means real environments are
+                  falsely called bundle violations.
+      verdict_1b  power at k=3. Failing this means real violations are missed,
+                  so a non-rejection carries even less information than the
+                  interpretation rule already allows.
+    """
     if force_flag:
-        sys.exit("--i-know-gate0-failed is not implemented on purpose. "
-                 "Fix the statistic, rerun 81_ranktest_oracle.py --gate 0, "
-                 "then run this.")
-    if not GATE0_JSON.exists():
-        sys.exit(f"REFUSING TO RUN: {GATE0_JSON} not found. Gate 0 must pass "
-                 f"before any real-data number is computed.")
-    verdict = json.load(open(GATE0_JSON)).get("verdict")
-    if verdict != "PASS":
-        sys.exit(
-            f"REFUSING TO RUN: Gate 0 verdict is {verdict!r}, not 'PASS'.\n"
-            f"  The r_hat readout is not calibrated: on control-only data with\n"
-            f"  no intervention, r_hat>0 fires at ~1-(1-alpha)^d instead of\n"
-            f"  alpha, and r_hat>2 -- the event that falsifies the bundle --\n"
-            f"  fired at up to 0.09 at d=20 with nothing to detect.\n"
-            f"  Every environment this script scored would inherit that rate.\n"
-            f"  See {GATE0_JSON}."
-        )
-    print(f"[gate0] verdict=PASS, proceeding", flush=True)
+        sys.exit("--i-know-the-gates-failed is not implemented on purpose. "
+                 "Fix the statistic, rerun 81_ranktest_oracle.py --gate 0 and "
+                 "--gate 1, then run this.")
+
+    for path, label in ((GATE0_JSON, "Gate 0"), (GATE1_JSON, "Gate 1")):
+        if not path.exists():
+            sys.exit(f"REFUSING TO RUN: {path} not found. {label} must pass "
+                     f"before any real-data number is computed.")
+
+    v0 = json.load(open(GATE0_JSON)).get("verdict")
+    g1 = json.load(open(GATE1_JSON))
+    v1a, v1b = g1.get("verdict_1a"), g1.get("verdict_1b")
+
+    failures = []
+    if v0 != "PASS":
+        failures.append(f"Gate 0 verdict is {v0!r}, not 'PASS' ({GATE0_JSON})")
+    if v1a != "PASS":
+        failures.append(f"Gate 1a (validity at k=1) is {v1a!r}, not 'PASS'. "
+                        f"The test over-rejects when the assumption bundle "
+                        f"HOLDS, so every 'violation' this script reported "
+                        f"would carry that false-positive rate.")
+    if v1b != "PASS":
+        failures.append(f"Gate 1b (power at k=3) is {v1b!r}, not 'PASS'. "
+                        f"Real rank violations are missed at the tested n.")
+    if failures:
+        sys.exit("REFUSING TO RUN:\n  " + "\n  ".join(failures)
+                 + f"\n  See {GATE1_JSON}.")
+
+    print(f"[gates] Gate 0 PASS, Gate 1a PASS, Gate 1b PASS, proceeding",
+          flush=True)
 
 
 # -------------------------------------------------------------------- loaders
@@ -289,7 +317,7 @@ def main():
     a = ap.parse_args()
 
     if not a.dry_run:
-        require_gate0_pass()
+        require_gates_pass()
 
     rng = np.random.default_rng(a.seed)
     print(f"[load] dataset={a.dataset}", flush=True)

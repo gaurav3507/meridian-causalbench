@@ -20,12 +20,20 @@ space contained in span{M D v, u}, hence rank <= 2. For a source node v = 0
 and only the delta term survives, hence rank 1. Linear mixing X = A Z maps
 this to A (Sigma_Z,e - Sigma_Z,0) A^T, which can only lose rank.
 
-THE DECISION -- reject_rank2_cf (Chen-Fang)
---------------------------------------------
-The decision is the Chen-Fang composite-null-calibrated rank test; see
-chen_fang_rank_test below for the algorithm and the citation.
+THE DECISION -- reject_rank2_cf, LFC-calibrated (method="lfc", default)
+------------------------------------------------------------------------
+The decision fixes r_hat === r, the null rank being tested, and calibrates
+the Chen-Fang bootstrap there. See _lfc_rank_test for the argument and the
+citation. NO TUNING CONSTANT of any kind enters the decision path: no kappa,
+no beta, nothing but (r, B, alpha).
 
-TWO STATISTICS HAVE ALREADY BEEN RETIRED HERE, both caught by the gates.
+Two rank ESTIMATORS are kept on disk, unused by default and selectable via
+method= for the paper's comparison table only:
+    method="cfa"  kappa-tuned, Chen-Fang eq (9)
+    method="cft"  tuning-free sequential, Chen-Fang eq (C.1), with beta
+Neither is the decision. Both are retired for the reasons below.
+
+THREE STATISTICS HAVE ALREADY BEEN RETIRED HERE, all caught by the gates.
 
 1. A count of exceedances over all d eigenvalues, rejecting when the count
    exceeded 2. That was d marginal level-alpha tests with no multiplicity
@@ -42,8 +50,18 @@ TWO STATISTICS HAVE ALREADY BEEN RETIRED HERE, both caught by the gates.
    noise variance was scaled by 1.00 to 3.00. The test was reading
    intervention STRENGTH, not intervention RANK.
 
-The lesson both times: passing a gate at one point of a composite null says
-nothing about the rest of it.
+3. Rank ESTIMATION itself, in both its kappa (CF-A) and tuning-free
+   sequential (CF-T) forms. Estimating r_hat picks ONE member of the
+   composite null and calibrates there, so the level holds only if r_hat is
+   right. CF-A over-selected (capped at 2 by construction) and was safe by
+   accident; CF-T under-selected badly, returning r_hat=0 in 108 of 160 k=1
+   soft runs where the truth was rank 1, and Gate 1a regressed from 0.013 to
+   0.225. Rejection is monotone decreasing in r_hat (0.298 / 0.159 / 0.093),
+   so the fix is not a better estimator but no estimator: pin r_hat to r, the
+   least favourable configuration.
+
+The lesson all three times: passing a gate at one point of a composite null
+says nothing about the rest of it.
 
 r_hat_stepdown is a descriptive rank readout, not the decision, and it still
 rides on the retired zero-signal band, so it inherits that magnitude
@@ -163,7 +181,70 @@ def _two_disjoint(n_pool, n_match, rng):
     return take[:n_match], take[n_match:]
 
 
-def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng, beta=None):
+def _lfc_rank_test(Y_e, Y_0, r, B, alpha, rng):
+    """H0: rank(Delta) <= r, calibrated at the LEAST FAVOURABLE CONFIGURATION.
+
+    NO RANK ESTIMATION. r_hat is FIXED at r, the null rank being tested. There
+    is no kappa, no beta, and no other tuning constant anywhere in this
+    function: the only inputs are (r, B, alpha), all of which the caller
+    states as part of the hypothesis and the resampling budget.
+
+    WHY r_hat === r IS THE RIGHT FIX. H0: rank <= r is COMPOSITE, containing
+    every true rank 0, 1, ..., r. Estimating r_hat picks one member of that
+    null and calibrates there, so the level is only controlled if r_hat is
+    right; both previous attempts got it wrong in opposite directions, and the
+    kappa version was safe only by accident. Measured here, the rejection rate
+    is MONOTONE DECREASING in the r_hat used for the projection:
+
+        r_hat = 0 -> 0.298      r_hat = 1 -> 0.159      r_hat = 2 -> 0.093
+
+    so the largest r_hat allowed under H0, namely r itself, is the LEAST
+    FAVOURABLE CONFIGURATION: it yields the largest critical value and hence
+    the smallest rejection probability. Calibrating there controls the level
+    across the WHOLE composite null rather than at one estimated point of it,
+    at the cost of conservatism when the true rank is strictly below r. This
+    is the standard least-favourable-configuration construction for composite
+    nulls (Lehmann & Romano, Testing Statistical Hypotheses, 3rd ed., ch. 3;
+    the same device underlies least-favourable-distribution constructions in
+    moment-inequality testing, e.g. Andrews & Soares 2010).
+
+    Concretely this is Chen-Fang equation (11) with r_hat pinned to r, so
+    P2, Q2 are the last (d - r) singular directions and the bootstrap
+    statistic sums ALL (d - r) squared singular values of the projected
+    fluctuation. The bootstrap for M is unchanged: nonparametric paired
+    resampling of the cells that produced Delta, recentred.
+
+    Returns (reject, stat, crit, r_used, None, trace) to match the CF-T
+    signature; r_used is always r and the trace is empty because nothing was
+    estimated.
+    """
+    n, d = Y_e.shape
+    tau = np.sqrt(n)
+    if r >= d:
+        raise ValueError(f"need r < d for a non-trivial null, got r={r}, d={d}")
+
+    Delta = np.cov(Y_e, rowvar=False) - np.cov(Y_0, rowvar=False)
+    P, s, Qt = np.linalg.svd(Delta)
+    Q = Qt.T
+
+    # LFC: the null space is taken to be (d - r)-dimensional, no estimation.
+    P2, Q2 = P[:, r:], Q[:, r:]
+
+    boot = np.empty(B)
+    for b in range(B):
+        ie = rng.integers(0, n, n)
+        i0 = rng.integers(0, n, n)
+        Dstar = np.cov(Y_e[ie], rowvar=False) - np.cov(Y_0[i0], rowvar=False)
+        M = tau * (Dstar - Delta)          # recentred fluctuation
+        sv = np.linalg.svd(P2.T @ M @ Q2, compute_uv=False)
+        boot[b] = float(np.sum(sv ** 2))   # ALL of them: lo = r - r_hat = 0
+    crit = float(np.quantile(boot, 1.0 - alpha))
+
+    stat = float(tau ** 2 * np.sum(s[r:] ** 2))
+    return bool(stat > crit), stat, crit, int(r), None, []
+
+
+def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng, beta=None, method="lfc"):
     """Chen-Fang composite-null-calibrated test of H0: rank(Delta) <= r.
 
     Chen, Q. and Z. Fang (2019), "Improved inference on the rank of a matrix",
@@ -244,6 +325,10 @@ def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng, beta=None):
     """
     n, d = Y_e.shape
     tau = np.sqrt(n)
+    if method not in ("lfc", "cft", "cfa"):
+        raise ValueError(f"unknown method {method!r}; use lfc, cft or cfa")
+    if method == "lfc":
+        return _lfc_rank_test(Y_e, Y_0, r, B, alpha, rng)
     beta = alpha / 10.0 if beta is None else float(beta)
     if not (0.0 < beta < alpha):
         raise ValueError(f"need 0 < beta < alpha, got beta={beta}, alpha={alpha}")
@@ -276,6 +361,21 @@ def chen_fang_rank_test(Y_e, Y_0, r, B, alpha, rng, beta=None):
             sv = np.linalg.svd(P2.T @ M @ Q2, compute_uv=False)
             boot[b] = float(np.sum(sv[lo:] ** 2))
         return float(np.quantile(boot, 1.0 - level))
+
+    if method == "cfa":
+        # RETIRED, kept selectable for the paper's comparison table only.
+        # kappa-tuned rank estimator, eq (9), with the scale-equivariant
+        # constant. Capped at r by construction, so it can only ever
+        # under- or correctly-select, never exceed r.
+        kappa = float(s[0]) * n ** -0.25
+        r_hat = 0
+        for j in range(min(r, d)):
+            if s[j] >= kappa:
+                r_hat = j + 1
+            else:
+                break
+        crit = crit_at(r_hat, alpha, r - r_hat)
+        return bool(phi(r) > crit), phi(r), crit, int(r_hat), float(kappa), []
 
     # ---- CF-T STEP 1: tuning-free sequential rank estimator, eq (C.1).
     #   r_hat = min{ rr = 0..d-1 : tau^2 phi_rr(Delta) <= c_{1-beta}(rr) },
@@ -334,7 +434,7 @@ def null_band_from_pool(Yp, n_match, B_null, alpha, rng):
 # ------------------------------------------------------------- entry point
 def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
                     *, drop=(), basis_idx=None, ref_pool_idx=None,
-                    null_band=None):
+                    null_band=None, method="lfc"):
     """Estimate rank(Sigma_e - Sigma_0) against a resampled null band.
 
     X_env      : (n_e, D) environment cells
@@ -433,22 +533,10 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
     else:
         band = null_band_from_pool(Yp_all, n_match_eff, B_null, alpha, rng)
 
-    # ---- THE DECISION: Chen-Fang CF-T, calibrated against the composite null.
-    reject_cf, cf_stat, cf_crit, cf_rhat, cf_beta, cf_trace = chen_fang_rank_test(
-        Y_e, Y_0, 2, B_null, alpha, rng)
-
-    # The retired kappa-tuned rank estimate, eq (9), recomputed for free off
-    # the same spectrum. Recorded ONLY so the 1a boundary diff is auditable:
-    # it is not used in any decision.
-    _s = np.sort(np.abs(np.linalg.eigvalsh(
-        np.cov(Y_e, rowvar=False) - np.cov(Y_0, rowvar=False))))[::-1]
-    _kappa = float(_s[0]) * n_match_eff ** -0.25
-    cf_rhat_kappa = 0
-    for _j in range(2):
-        if _s[_j] >= _kappa:
-            cf_rhat_kappa = _j + 1
-        else:
-            break
+    # ---- THE DECISION: LFC-calibrated rank test. No rank estimation, and no
+    # tuning constant of any kind in this path -- see _lfc_rank_test.
+    reject_cf, cf_stat, cf_crit, cf_rhat, cf_aux, cf_trace = chen_fang_rank_test(
+        Y_e, Y_0, 2, B_null, alpha, rng, method=method)
 
     exceed = lam > band
 
@@ -466,8 +554,8 @@ def rank_diagnostic(X_env, X_basis, X_ref_pool, d, n_match, B_null, alpha, rng,
         cf_stat=cf_stat,
         cf_crit=cf_crit,
         cf_r_hat=cf_rhat,
-        cf_beta=cf_beta,
-        cf_r_hat_kappa_RETIRED=int(cf_rhat_kappa),
+        cf_method=method,
+        cf_aux=cf_aux,
         cf_rejected_on_rhat=bool(cf_rhat > 2),
         r_hat_stepdown=int(r_hat_stepdown),
         lam=lam.tolist(),
