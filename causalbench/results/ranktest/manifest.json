@@ -1,151 +1,167 @@
 {
   "lane": "ranktest",
-  "status": "Task 1 and Task 2 complete. Gate 2 NOT run. Phase B still refusing.",
-  "task1": {
-    "change": "Gate 0 verdict logic: two-sided band -> ONE-SIDED upper check at 0.081",
-    "upper_bound_unchanged": true,
-    "rationale": "rank 0 is where a correct composite-null test is exact or conservative; Chen-Fang predicts conservatism there because the bootstrap projects onto an ESTIMATED null space whose rank generally exceeds the true rank at rank 0",
-    "gate0_verdict_kappa_era": "PASS",
-    "gate0_verdict_final": "PASS"
+  "status": "Tasks A, B, C complete. Gate 2 NOT run. Phase B refusing on BOTH gates.",
+  "taskA": {
+    "change": "82_ranktest_real.py now requires Gate 0 PASS AND Gate 1a PASS AND Gate 1b PASS",
+    "verified_refusing": true,
+    "refuses_on": [
+      "verdict_1a=FAIL",
+      "verdict_1b=FAIL"
+    ]
   },
-  "task2": {
-    "change": "kappa-tuned r_hat (eq 9, CF-A) -> tuning-free sequential r_hat (eq C.1, CF-T)",
-    "beta": "alpha/10 = 0.005 (MY choice; CF-T only requires 0<beta<alpha; paper prescribes none)",
-    "deviation": "implemented Appendix C eq (C.1) bootstrap sequential estimator, NOT a KP-based one; KP would need a fourth-moment variance estimator for vec(Delta) that is itself unvalidated",
-    "outcome": "1a REGRESSED, did not improve",
-    "k1_kappa": {
-      "raw_hard": 0.113,
-      "raw_soft": 0.013,
-      "std_hard": 0.113,
-      "std_soft": 0.037
+  "taskB": {
+    "statistic": "LFC: r_hat === r0 = 2, no rank estimation",
+    "tuning_constants_in_decision_path": "NONE (no kappa, no beta, no n^-1/4); inputs are only (r, B, alpha)",
+    "retired_paths_kept_selectable": {
+      "cfa": "kappa-tuned eq (9)",
+      "cft": "tuning-free sequential eq (C.1) + beta"
     },
-    "k1_cft": {
-      "raw_hard": 0.225,
-      "raw_soft": 0.225,
-      "std_hard": 0.125,
-      "std_soft": 0.2
-    },
-    "mechanism": "r_hat UNDER-selection, not the new r_hat>r outright-rejection rule (1/28 hard, 0/34 soft rejections came from it). CF-T r_hat at k=1 soft is 0 in 108/160 runs; kappa never returned 0 because it was capped at 2 by construction. Rejection falls monotonically with r_hat: 0.298 at r_hat=0, 0.159 at 1, 0.093 at 2.",
-    "beta_sweep": {
-      "beta": [
-        0.005,
-        0.01,
-        0.025,
-        0.045
-      ],
-      "reject_hard": [
-        0.1,
-        0.1,
-        0.05,
-        0.05
-      ],
-      "reject_soft": [
-        0.15,
-        0.15,
-        0.1,
-        0.05
-      ],
-      "r_hat_correct_hard": [
-        0.85,
-        0.85,
-        0.9,
-        0.9
-      ],
-      "r_hat_correct_soft": [
-        0.3,
-        0.3,
-        0.3,
-        0.3
-      ],
-      "reading": "larger beta lowers rejection only via the 1-alpha+beta second-stage quantile; r_hat accuracy is FLAT in beta, so this is mechanical conservatism, not a fix"
-    },
-    "residual_boundary_excess": {
-      "hard_boundary_true_rank2_rhat_correct": {
-        "n": 106,
-        "reject": 0.094
+    "citation": "least-favourable-configuration construction for composite nulls; Lehmann & Romano, Testing Statistical Hypotheses 3rd ed ch.3; cf. Andrews & Soares 2010",
+    "rationale": "rejection is monotone decreasing in r_hat (0.298/0.159/0.093), so rank=r0 is the LFC of H0: rank<=r0",
+    "gate0": {
+      "raw|d=5": {
+        "pooled": 0.0034999999999999996,
+        "max_seed": 0.01,
+        "seeds_above_upper": 0
       },
-      "hard_boundary_true_rank2_rhat_under": {
-        "n": 37,
-        "reject": 0.459
+      "raw|d=10": {
+        "pooled": 0.003,
+        "max_seed": 0.005,
+        "seeds_above_upper": 0
       },
-      "soft_interior_true_rank1_rhat_correct": {
-        "n": 51,
-        "reject": 0.059
+      "raw|d=20": {
+        "pooled": 0.0025,
+        "max_seed": 0.005,
+        "seeds_above_upper": 0
       },
-      "soft_interior_true_rank1_rhat_under": {
-        "n": 108,
-        "reject": 0.287
+      "standardised|d=5": {
+        "pooled": 0.0035000000000000005,
+        "max_seed": 0.01,
+        "seeds_above_upper": 0
       },
-      "answer": "YES. A residual boundary excess survives correct r_hat selection: 0.094 vs nominal 0.05 at the rank-2 boundary with r_hat=2. At the interior with correct r_hat the test is exact (0.059)."
-    }
-  },
-  "gate0_final": {
-    "raw|d=5": {
-      "pooled": 0.031000000000000007,
-      "max_seed": 0.085,
-      "seeds_above_upper": 1
+      "standardised|d=10": {
+        "pooled": 0.0015,
+        "max_seed": 0.01,
+        "seeds_above_upper": 0
+      },
+      "standardised|d=20": {
+        "pooled": 0.001,
+        "max_seed": 0.005,
+        "seeds_above_upper": 0
+      }
     },
-    "raw|d=10": {
-      "pooled": 0.029500000000000005,
-      "max_seed": 0.09,
-      "seeds_above_upper": 2
-    },
-    "raw|d=20": {
-      "pooled": 0.029500000000000005,
-      "max_seed": 0.085,
-      "seeds_above_upper": 2
-    },
-    "standardised|d=5": {
-      "pooled": 0.026500000000000003,
-      "max_seed": 0.075,
-      "seeds_above_upper": 0
-    },
-    "standardised|d=10": {
-      "pooled": 0.027000000000000003,
-      "max_seed": 0.08,
-      "seeds_above_upper": 0
-    },
-    "standardised|d=20": {
-      "pooled": 0.026500000000000003,
-      "max_seed": 0.08,
-      "seeds_above_upper": 0
-    }
-  },
-  "gate1_final": {
-    "curve": {
+    "gate0_verdict": "PASS",
+    "gate1_curve": {
       "raw|hard": {
-        "1": 0.225,
-        "2": 0.8875,
+        "1": 0.0875,
+        "2": 0.85,
         "3": 0.9875,
         "5": 1.0
       },
       "raw|soft": {
-        "1": 0.225,
-        "2": 0.2875,
-        "3": 0.475,
-        "5": 0.6875
+        "1": 0.0,
+        "2": 0.0875,
+        "3": 0.35,
+        "5": 0.6
       },
       "raw|shift": {
-        "1": 0.025
+        "1": 0.0
       },
       "standardised|hard": {
-        "1": 0.125,
-        "2": 0.9,
+        "1": 0.075,
+        "2": 0.8625,
         "3": 0.9875,
         "5": 1.0
       },
       "standardised|soft": {
-        "1": 0.2,
-        "2": 0.25,
-        "3": 0.4375,
-        "5": 0.725
+        "1": 0.0,
+        "2": 0.0625,
+        "3": 0.3875,
+        "5": 0.6375
       },
       "standardised|shift": {
-        "1": 0.0375
+        "1": 0.0
       }
     },
-    "verdict_1a": "FAIL",
-    "verdict_1b": "FAIL"
+    "gate1_verdict_1a": "FAIL",
+    "gate1_verdict_1b": "FAIL",
+    "boundary_split": {
+      "hard_source_true_rank1_interior": {
+        "n": 16,
+        "reject": 0.0
+      },
+      "hard_nonsource_true_rank2_boundary": {
+        "n": 144,
+        "reject": 0.09027777777777778
+      },
+      "soft_true_rank1_interior": {
+        "n": 160,
+        "reject": 0.0
+      }
+    },
+    "r_hat_values_used": [
+      2
+    ],
+    "shift_only": {
+      "raw|shift": 0.0,
+      "standardised|shift": 0.0
+    }
+  },
+  "taskC": {
+    "design": "hard non-source only (true rank 2 = boundary), r_hat===2, 200 draws/point, both scalings",
+    "points": [
+      {
+        "n_e": 500,
+        "scaling": "raw",
+        "reject": 0.1,
+        "n_draws": 200
+      },
+      {
+        "n_e": 500,
+        "scaling": "standardised",
+        "reject": 0.06,
+        "n_draws": 200
+      },
+      {
+        "n_e": 2000,
+        "scaling": "raw",
+        "reject": 0.06,
+        "n_draws": 200
+      },
+      {
+        "n_e": 2000,
+        "scaling": "standardised",
+        "reject": 0.065,
+        "n_draws": 200
+      },
+      {
+        "n_e": 8000,
+        "scaling": "raw",
+        "reject": 0.09,
+        "n_draws": 200
+      },
+      {
+        "n_e": 8000,
+        "scaling": "standardised",
+        "reject": 0.08,
+        "n_draws": 200
+      },
+      {
+        "n_e": 20000,
+        "scaling": "raw",
+        "reject": 0.06,
+        "n_draws": 200
+      },
+      {
+        "n_e": 20000,
+        "scaling": "standardised",
+        "reject": 0.06,
+        "n_draws": 200
+      }
+    ],
+    "trend": "FLAT. No shrinkage toward 0.05 as n grows: raw 2.00x/1.20x/1.80x/1.20x and standardised 1.20x/1.30x/1.60x/1.20x at n=500/2000/8000/20000.",
+    "reading": "consistent with a STRUCTURAL boundary excess rather than a finite-sample one, but 200 draws/point gives MC SE 0.0154 so a small residual bias cannot be resolved",
+    "nothing_tuned": true
   },
   "gate2": "NOT RUN",
   "environment": {
