@@ -22,6 +22,8 @@ Statistics, in the order they were tried and retired:
 | envelope | `lfc` | d=5 raw s*=0.100; d=5 sta s*=0.100; d=10 raw s*=0.100; d=10 sta s*=0.100; d=20 raw s*=0.030; d=20 sta s*=0.059; d=40 raw s*=0.034; d=40 sta s*=0.046; d=80 raw s*=0.000; d=80 sta s*=0.000 | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44.json` |
 | envelope | `lfc` | TASK A  s* decay vs d_latent. n_e=2000 B=500 10x40=400 draws/point | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44__decay_raw_log.json` |
 | envelope | `lfc` | s=0 CONTROL (exactly linear mixing), k=1, n_e=2000, 400 draws/point | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44__s0_linear_control.json` |
+| envelope | `lfc` | (digest failed: KeyError) | `4ddd503` | CURRENT | - | `lfc/envelope/2026-08-10T13-20-00__linear_dim_boundary.json` |
+| envelope | `lfc` | (digest failed: KeyError) | `4ddd503` | CURRENT | - | `lfc/envelope/2026-08-10T13-20-01__linear_dim_over_n.json` |
 | gate0 | `lfc` | verdict=PASS; pooled FPR 0.0010-0.0035 | `928fed1` | CURRENT | - | `lfc/gate0/2026-08-10T10-44-42.json` |
 | gate1 | `lfc` | n=500 raw 0.100; n=500 sta 0.060; n=2000 raw 0.060; n=2000 sta 0.065; n=8000 raw 0.090; n=8000 sta 0.080; n=20000 raw 0.060; n=20000 sta 0.060 | `928fed1` | CURRENT | - | `lfc/gate1/2026-08-10T10-38-34__boundary_nscaling.json` |
 | gate1 | `lfc` | 1a=PASS 1b=REPORTED_NOT_GATED; k=1 0.087/0.000/0.000/0.075/0.000/0.000; k=3 0.988/0.350/0.988/0.388 | `117a464` | CURRENT | - | `lfc/gate1/2026-08-10T11-04-39.json` |
