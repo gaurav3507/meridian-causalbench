@@ -56,6 +56,7 @@ import datetime
 import importlib.util
 import json
 import os
+import resource
 import sys
 from pathlib import Path
 
@@ -74,6 +75,25 @@ HCP_TASKS = ["WM", "GAMBLING", "MOTOR", "LANGUAGE", "SOCIAL", "RELATIONAL",
              "EMOTION"]
 HCP_ENCS = ["LR", "RL"]
 HCP_NFRAMES = 176               # matches mean_shift_v2 / 70_hcp_ceiling
+
+
+def utc_stamp():
+    """UTC, with an explicit Z. Filenames sort correctly across machines.
+
+    The ABIDE artefact written on 10 Aug is named ...T15-22-57 from Mac local
+    time (IST) while its mtime is 12:14 UTC. Sorting those against A100 files
+    gives the wrong order, so a "latest" query can silently return a stale
+    artefact. New writes are UTC only; existing files are NOT renamed.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def peak_rss_mb():
+    """Peak resident set size. ru_maxrss is bytes on macOS, KiB on Linux."""
+    r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(r / (1024 ** 2), 1) if sys.platform == "darwin" \
+        else round(r / 1024, 1)
 
 
 def _load_module(path, name):
@@ -230,27 +250,126 @@ def do_norman(rng, args):
     return [profile_perturb(X, iv, "norman", rng)]
 
 
+# arm flag -> the value in RNA_metadata.csv's `condition` column.
+# Candidates in preference order. The IFNg entry has TWO spellings because the
+# handoff specifies ASCII "IFNg" while 41_screen_frangieh.py:83 records
+# "IFN<U+03B3>" with the Greek small letter gamma and states it was verified
+# against RNA_metadata.csv. Accepting both means the run does not die on an
+# encoding detail; whichever is actually present is used and recorded.
+FRANGIEH_ARMS = {
+    "coculture": ("Co-culture",),
+    "control": ("Control",),
+    "ifng": ("IFNγ", "IFNg"),
+}
+
+
+def _resolve_arm(arm, present):
+    """Map the --arm flag onto the exact `condition` value in the data."""
+    cands = FRANGIEH_ARMS[arm]
+    for c in cands:
+        if c in present:
+            return c
+    sys.exit(
+        f"[fatal] --arm {arm} maps to {cands!r}, none of which appears in the "
+        f"`condition` column.\n"
+        f"        distinct values found: {sorted(present)!r}")
+
+
 def do_frangieh(rng, args):
-    """PER ARM, never pooled: each arm has its own control pool."""
+    """ONE arm, never pooled. The control basis is fitted WITHIN the arm.
+
+    MEMORY. RNA_expression.csv.gz is a dense ~218k-cell CSV, about 24.8 GB
+    uncompressed; a whole-matrix float64 read does not survive. Two things
+    keep this small:
+
+      * Sections 1 and 2 need NO expression data at all. Environment attrition
+        and the cells-per-environment distribution are counts over the
+        metadata labels, so they are computed from RNA_metadata.csv alone.
+      * Section 3 needs expression only for this arm's CONTROL cells, and only
+        up to max(SPEC_CAPS) of them. So the expression read is restricted to
+        that capped control-cell list before any chunk is materialised.
+
+    The read itself is 41_screen_frangieh.load_expression, which already reads
+    in chunks, filters to the wanted cells inside the chunk loop, and holds
+    float32. Nothing is re-implemented here.
+    """
     fr = _load_module(HERE / "41_screen_frangieh.py", "_frangieh41")
-    md, meta = fr.load_metadata()
-    X, vn, cell_order = fr.load_expression(fr.EXPR_CSV,
-                                           list(md["NAME"].astype(str)),
-                                           hvg=args.hvg)
-    md = md.set_index(md["NAME"].astype(str)).reindex(cell_order)
-    ok = md["iv"].notna().to_numpy()
-    X, md = X[ok], md.loc[ok]
+    # load_metadata already encodes: skiprows=[1] for SCP's row-2 TYPE
+    # convention, MOI == 1 only, target = sgRNA with the TRAILING guide index
+    # stripped via ^(.*)_\d+$, and controls pooled from NO_SITE_* and
+    # ONE_NON-GENE_SITE_*.
+    md, loader_meta = fr.load_metadata()
+    present = set(md["condition"].astype(str))
+    arm_value = _resolve_arm(args.arm, present)
+
+    # SUBSET TO THE ARM FIRST. Arms are never pooled: the arm effect dominates
+    # and would inflate every downstream quantity.
+    md = md.loc[md["condition"].astype(str) == arm_value].copy()
     iv = md["iv"].to_numpy().astype(object)
-    arms = md["condition"].to_numpy().astype(str)
-    blocks = []
-    for arm in sorted(set(arms)):
-        sel = arms == arm
-        blocks.append(profile_perturb(np.ascontiguousarray(X[sel]), iv[sel],
-                                      f"frangieh:{arm}", rng))
-    blocks.append(dict(label="frangieh:loader_metadata", loader_meta=meta,
-                       note="per-arm only; the pooled profile is deliberately "
-                            "not computed"))
-    return blocks
+    names = md["NAME"].astype(str).to_numpy()
+    print(f"[frangieh:{args.arm}] condition={arm_value!r}  {len(md)} MOI==1 "
+          f"cells in arm", flush=True)
+
+    # ---- sections 1 and 2: metadata only, no expression read
+    ctrl_mask = iv == CTRL_LABEL
+    targets, counts = np.unique(iv[~ctrl_mask], return_counts=True)
+
+    # ---- section 3: expression for the arm's CONTROL cells only, capped
+    cap = max(SPEC_CAPS)
+    ctrl_names = names[ctrl_mask]
+    if len(ctrl_names) > cap:
+        take = rng.choice(len(ctrl_names), size=cap, replace=False)
+        ctrl_names_use = list(ctrl_names[np.sort(take)])
+    else:
+        ctrl_names_use = list(ctrl_names)
+    print(f"[frangieh:{args.arm}] {len(ctrl_names)} control cells in arm; "
+          f"reading expression for {len(ctrl_names_use)} of them "
+          f"(cap {cap})", flush=True)
+
+    Xc, vn, cell_order = fr.load_expression(fr.EXPR_CSV, ctrl_names_use,
+                                            hvg=args.hvg)
+    gene_set = set(map(str, vn))
+    all_targets = sorted({str(t) for t in targets})
+    in_cols = sum(1 for t in all_targets if t in gene_set)
+
+    block = dict(
+        label=f"frangieh:{args.arm}",
+        arm_flag=args.arm, arm_condition_value=arm_value,
+        n_cells_in_arm=int(len(md)),
+        n_control_cells=int(ctrl_mask.sum()),
+        n_environments_total=int(len(targets)),
+        n_features=int(Xc.shape[1]),
+        environment_attrition=env_attrition(counts),
+        cells_per_environment=cell_distribution(counts),
+        latent_dimension_from_controls=(
+            latent_dim_block(Xc, rng) if Xc.shape[0] >= 50
+            else {"error": f"only {Xc.shape[0]} control cells read"}),
+        data_fingerprint_controls=data_fingerprint(Xc),
+        n_targets_in_expression_columns=int(in_cols),
+        n_targets_total=len(all_targets),
+        target_column_drop_is_noop=bool(in_cols == 0),
+        target_column_note=("Norman had 0/105 targets present as expression "
+                            "columns, which made the target-column drop in "
+                            "project() a no-op. This records whether the same "
+                            "holds here; a non-zero count means the drop is "
+                            "LIVE for this arm."),
+        control_basis_scope="within this arm only; arms are never pooled",
+        spectrum_read_note=(f"expression read restricted to {len(ctrl_names_use)} "
+                            f"control cells of this arm; attrition and the "
+                            f"cells-per-environment distribution come from the "
+                            f"metadata and used no expression data"),
+    )
+    a_ = block["environment_attrition"]
+    print(f"[frangieh:{args.arm}] surviving: " +
+          "  ".join(f"n>={m}:{a_[str(m)]}" for m in NMIN_SET), flush=True)
+    print(f"[frangieh:{args.arm}] targets as expression columns: "
+          f"{in_cols}/{len(all_targets)} "
+          f"(drop is {'a NO-OP' if in_cols == 0 else 'LIVE'})", flush=True)
+    return [block,
+            dict(label=f"frangieh:{args.arm}:loader_metadata",
+                 loader_meta=loader_meta,
+                 note="single arm; the pooled profile is deliberately never "
+                      "computed")]
 
 
 def do_hcp(rng, args):
@@ -583,6 +702,9 @@ def main():
                     default="/Users/gauravgoyal/Downloads/meridian/data/"
                             "processed/abide_harmonized.npz",
                     help="path to the ABIDE npz (differs per machine)")
+    ap.add_argument("--arm", choices=sorted(FRANGIEH_ARMS),
+                    help="Frangieh arm; REQUIRED with --dataset frangieh and "
+                         "rejected with any other dataset")
     ap.add_argument("--hvg", type=int, default=None, help="Frangieh only")
     ap.add_argument("--n-spec-cap", type=int, default=None,
                     help="override the spectrum subsample caps (default 2000,8000)")
@@ -594,6 +716,15 @@ def main():
     if not dataset:
         ap.error("give --dataset, --selftest, or --overlap-check")
     a.dataset = dataset
+    # --arm and frangieh are strictly bound in both directions.
+    if dataset == "frangieh" and not a.arm:
+        sys.exit("[fatal] --dataset frangieh requires --arm "
+                 f"{{{','.join(sorted(FRANGIEH_ARMS))}}}. Arms are never "
+                 "pooled: the arm effect dominates and would inflate every "
+                 "quantity reported here.")
+    if a.arm and dataset != "frangieh":
+        sys.exit(f"[fatal] --arm is only valid with --dataset frangieh, "
+                 f"got --dataset {dataset}.")
     if a.n_spec_cap:
         global SPEC_CAPS
         SPEC_CAPS = (a.n_spec_cap,)
@@ -615,13 +746,16 @@ def main():
                     "verdict is expressed or implied. Phase B is not "
                     "authorised."),
     )
-    ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    ts = utc_stamp()
     meta = RIO.make_meta(
         "descriptive", "descriptives", ts,
         dict(alpha=None, B=None, n_e=None, d=None, d_latent=None, D=None,
              n_env=None, seeds=[a.seed], draws_per_point=None,
-             dataset=a.dataset, hvg=a.hvg, nmin_set=list(NMIN_SET),
+             dataset=a.dataset, arm=a.arm, hvg=a.hvg,
+             nmin_set=list(NMIN_SET),
              spec_caps=list(SPEC_CAPS), platform_tag=RIO.platform_tag(),
+             timezone="UTC", timestamp_suffix="Z",
+             peak_rss_mb=peak_rss_mb(),
              overlap_check=bool(a.overlap_check)),
         status="CURRENT",
         note=f"descriptive profile of {a.dataset}; no test, no verdict")
@@ -629,8 +763,11 @@ def main():
     if a.overlap_check:
         payload["overlap_report"] = diff_against_other_platform(
             payload, a.dataset, RIO.platform_tag())
-    path = RIO.write_results(payload, meta, suffix=f"__{a.dataset}")
+    tag = a.dataset + (f"_{a.arm}" if a.arm else "")
+    payload["peak_rss_mb"] = peak_rss_mb()
+    path = RIO.write_results(payload, meta, suffix=f"__{tag}")
     print(f"[write] {path}", flush=True)
+    print(f"[rss]   peak {peak_rss_mb()} MB", flush=True)
     if a.overlap_check:
         r = payload.get("overlap_report")
         if r:
