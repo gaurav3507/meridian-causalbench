@@ -19,6 +19,7 @@ moved, never deleted.
 """
 import json
 import os
+import platform as _platform
 import subprocess
 import sys
 from pathlib import Path
@@ -59,13 +60,48 @@ def git_commit(short=True):
 
 
 def versions():
+    """Package versions AND platform.
+
+    The A100 venv (cb) differs from the Mac venv, so a number that moves
+    between machines has to be attributable either to the data or to the
+    environment. Recording versions alone is not enough: SVD results depend on
+    the BLAS backend, so the backend is captured too where numpy exposes it.
+    """
     out = {"python": sys.version.split()[0]}
-    for mod in ("numpy", "scipy", "pandas", "sklearn"):
+    for mod in ("numpy", "scipy", "pandas", "sklearn", "scanpy", "anndata"):
         try:
             out[mod] = __import__(mod).__version__
         except Exception:
             out[mod] = None
+    out["platform"] = {
+        "system": _platform.system(),
+        "release": _platform.release(),
+        "machine": _platform.machine(),
+        "processor": _platform.processor() or None,
+        "python_implementation": _platform.python_implementation(),
+    }
+    try:                                   # BLAS backend, when numpy exposes it
+        import numpy as _np
+        cfg = getattr(_np, "__config__", None)
+        blas = None
+        if cfg is not None and hasattr(cfg, "show"):
+            d = getattr(cfg, "_built_with_meson", None)
+            try:
+                info = cfg.show(mode="dicts")           # numpy >= 1.25
+                blas = (info.get("Build Dependencies", {})
+                          .get("blas", {}).get("name"))
+            except Exception:
+                blas = None
+        out["platform"]["numpy_blas"] = blas
+    except Exception:
+        out["platform"]["numpy_blas"] = None
     return out
+
+
+def platform_tag():
+    """Short stable label for the machine, used to diff Mac vs A100 runs."""
+    p = _platform
+    return f"{p.system()}-{p.machine()}-py{sys.version.split()[0]}"
 
 
 def make_meta(statistic, gate, timestamp, config, status="CURRENT",

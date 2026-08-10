@@ -171,6 +171,21 @@ def spectrum_estimators(Xc, cap, rng, check_against_fit_pca=True):
     return out
 
 
+def data_fingerprint(X):
+    """Cheap, exact fingerprint of the INPUT array.
+
+    If a number differs between the Mac and the A100 the first question is
+    whether the two machines were even given the same bytes. Shape, dtype and
+    full-precision sums answer that, so a data difference is never mistaken for
+    version drift.
+    """
+    X = np.asarray(X)
+    return dict(shape=list(X.shape), dtype=str(X.dtype),
+                sum=float(np.asarray(X, dtype=np.float64).sum()),
+                sumsq=float((np.asarray(X, dtype=np.float64) ** 2).sum()),
+                nan_count=int(np.isnan(X).sum()))
+
+
 def latent_dim_block(Xc, rng):
     """Spectrum estimators at each cap, so n-sensitivity is visible."""
     return {str(cap): spectrum_estimators(Xc, cap, rng) for cap in SPEC_CAPS}
@@ -193,6 +208,8 @@ def profile_perturb(X, iv, label, rng):
         latent_dimension_from_controls=(
             latent_dim_block(X[ctrl_rows], rng) if len(ctrl_rows) >= 50
             else {"error": f"only {len(ctrl_rows)} control cells"}),
+        data_fingerprint_controls=(data_fingerprint(X[ctrl_rows])
+                                   if len(ctrl_rows) else None),
     )
     a = block["environment_attrition"]
     print(f"[{label}] surviving: " +
@@ -299,19 +316,239 @@ def do_hcp(rng, args):
     return [block]
 
 
+def do_abide(rng, args):
+    """fMRI, meridian-side. Environments are SITES; timepoints are the
+    per-subject frames. Small enough to profile on both machines, which is why
+    it is the default --overlap-check target.
+
+    There is no control condition, so the spectrum is over all pooled frames
+    and is labelled as such, exactly as for HCP.
+    """
+    path = Path(args.abide_npz)
+    if not path.exists():
+        sys.exit(f"[fatal] ABIDE npz not found: {path}  (pass --abide-npz)")
+    z = np.load(path, allow_pickle=True)
+    X = np.asarray(z["X"])                      # (subjects, timepoints, regions)
+    sites = np.asarray(z["site_ids"]).astype(str)
+    n_sub, n_tp, n_reg = X.shape
+    per_site = {}
+    for s_ in sorted(set(sites)):
+        per_site[s_] = int((sites == s_).sum()) * int(n_tp)
+    flat = X.reshape(-1, n_reg).astype(np.float64)
+    counts = list(per_site.values())
+    block = dict(
+        label="abide", modality="fMRI", source=str(path),
+        n_subjects=int(n_sub), n_conditions=len(per_site),
+        conditions=sorted(per_site), timepoints_per_subject=int(n_tp),
+        n_regions=int(n_reg), total_timepoints=int(flat.shape[0]),
+        timepoints_per_condition=per_site,
+        environment_attrition=env_attrition(counts),
+        cells_per_environment=cell_distribution(counts),
+        latent_dimension_from_pooled_frames=latent_dim_block(flat, rng),
+        data_fingerprint=data_fingerprint(flat),
+        spectrum_caveat=("no control condition; spectrum is over ALL pooled "
+                         "frames and is not comparable to the Perturb-seq "
+                         "control spectra"),
+        environment_caveat=("environment == acquisition SITE, not an "
+                            "intervention; this is a descriptive analogue only"),
+    )
+    a_ = block["environment_attrition"]
+    print(f"[abide] {n_sub} subjects, {len(per_site)} sites, {n_tp} frames each; "
+          f"surviving: " + "  ".join(f"n>={m}:{a_[str(m)]}" for m in NMIN_SET),
+          flush=True)
+    return [block]
+
+
 LOADERS = {"k562": lambda r, a: do_replogle("k562", r, a),
            "rpe1": lambda r, a: do_replogle("rpe1", r, a),
-           "norman": do_norman, "frangieh": do_frangieh, "hcp": do_hcp}
+           "norman": do_norman, "frangieh": do_frangieh, "hcp": do_hcp,
+           "abide": do_abide}
+
+
+
+# ===================== CROSS-ENVIRONMENT REPRODUCTION GATE ===================
+# The A100 `cb` venv differs from the Mac venv, and SVD-derived quantities
+# depend on the BLAS backend (Mac: accelerate; A100: whatever numpy was built
+# against). Without a fixed reference the two machines cannot be compared and a
+# version difference would read as a finding.
+#
+# --selftest generates ONE fixed synthetic covariance from ONE fixed seed and
+# recomputes all three dimension estimators. No bootstrap, no resampling: the
+# only RNG use is generating the data, and the spectrum cap is set above n so
+# the subsample path never draws.
+
+SELFTEST_SEED = 20260810
+SELFTEST_N, SELFTEST_P, SELFTEST_K = 1500, 60, 7
+
+# ---------------------------------------------------------------------------
+# PLACEHOLDER -- NOT YET PINNED.  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# These are the reference values the A100 must reproduce. They are DELIBERATELY
+# None until Gaurav runs --selftest on the Mac and supplies the numbers to
+# embed here. While they are None the selftest does NOT pass: it prints a
+# copy-paste block and exits 2, so an unpinned gate can never be mistaken for a
+# green one.
+SELFTEST_EXPECTED = {
+    "participation_ratio": None,                  # float, tol 1e-8
+    "effective_rank_exp_spectral_entropy": None,  # float, tol 1e-8
+    "n_components_for_variance": None,            # dict of ints, EXACT
+}
+SELFTEST_TOL = 1e-8
+# END PLACEHOLDER  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# ---------------------------------------------------------------------------
+
+
+def _selftest_data():
+    """Deterministic. Same bytes on every machine for a given numpy version."""
+    rng = np.random.default_rng(SELFTEST_SEED)
+    Q = np.linalg.qr(rng.standard_normal((SELFTEST_P, SELFTEST_P)))[0][:, :SELFTEST_K]
+    scale = np.linspace(3.0, 0.5, SELFTEST_K)
+    Z = rng.standard_normal((SELFTEST_N, SELFTEST_K)) * scale
+    return Z @ Q.T + 0.05 * rng.standard_normal((SELFTEST_N, SELFTEST_P))
+
+
+def run_selftest():
+    """Fail loudly on any mismatch. Never warn-and-continue."""
+    X = _selftest_data()
+    fp = data_fingerprint(X)
+    # cap above n so spectrum_estimators takes the no-subsample path: the only
+    # rng passed is therefore never used to draw.
+    got = spectrum_estimators(X, SELFTEST_N + 1, np.random.default_rng(0))
+    v = RIO.versions()
+    print("=" * 74)
+    print("SELFTEST  fixed synthetic covariance, no bootstrap, no resampling")
+    print("=" * 74)
+    print(f"  platform : {RIO.platform_tag()}   blas={v['platform'].get('numpy_blas')}")
+    print(f"  versions : numpy {v['numpy']}  scipy {v['scipy']}  "
+          f"sklearn {v['sklearn']}  scanpy {v['scanpy']}")
+    print(f"  data     : seed={SELFTEST_SEED} n={SELFTEST_N} p={SELFTEST_P} "
+          f"k={SELFTEST_K}")
+    print(f"  fingerprint sum={fp['sum']!r} sumsq={fp['sumsq']!r}")
+    print("  computed :")
+    print(f"    participation_ratio                  {got['participation_ratio']!r}")
+    print(f"    effective_rank_exp_spectral_entropy  "
+          f"{got['effective_rank_exp_spectral_entropy']!r}")
+    print(f"    n_components_for_variance            {got['n_components_for_variance']}")
+
+    if any(v_ is None for v_ in SELFTEST_EXPECTED.values()):
+        print("\n  STATUS: NOT PINNED -- reference constants are still the")
+        print("  placeholder. This is NOT a pass. Paste the block below into")
+        print("  SELFTEST_EXPECTED in this file, commit, then rerun on both")
+        print("  machines.\n")
+        print("SELFTEST_EXPECTED = {")
+        print(f'    "participation_ratio": {got["participation_ratio"]!r},')
+        print(f'    "effective_rank_exp_spectral_entropy": '
+              f'{got["effective_rank_exp_spectral_entropy"]!r},')
+        print(f'    "n_components_for_variance": {got["n_components_for_variance"]!r},')
+        print("}")
+        return 2
+
+    fails = []
+    for key, tol_exact in (("participation_ratio", False),
+                           ("effective_rank_exp_spectral_entropy", False),
+                           ("n_components_for_variance", True)):
+        exp, act = SELFTEST_EXPECTED[key], got[key]
+        if tol_exact:
+            if act != exp:
+                fails.append(f"{key}: expected {exp} got {act} (must match EXACTLY)")
+        else:
+            delta = abs(float(act) - float(exp))
+            if not delta <= SELFTEST_TOL:
+                fails.append(f"{key}: expected {exp!r} got {act!r} "
+                             f"|delta|={delta:.3e} > tol {SELFTEST_TOL:g}")
+    if fails:
+        print("\n  SELFTEST FAILED:")
+        for f in fails:
+            print(f"    {f}")
+        print("\n  Do NOT compare results across machines until this passes.")
+        return 1
+    print(f"\n  SELFTEST PASSED (tol {SELFTEST_TOL:g} continuous, exact counts)")
+    return 0
+
+
+def _flatten(obj, prefix=""):
+    out = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.update(_flatten(v, f"{prefix}.{k}" if prefix else str(k)))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            out.update(_flatten(v, f"{prefix}[{i}]"))
+    else:
+        out[prefix] = obj
+    return out
+
+
+def diff_against_other_platform(payload, dataset, this_tag):
+    """Find prior artefacts for this dataset from a DIFFERENT platform and
+    report every differing field. Silence here means the machines agree."""
+    others = []
+    for path, prior in RIO.iter_results(gate="descriptives",
+                                        statistic="descriptive"):
+        m = prior.get("meta", {})
+        if prior.get("dataset") != dataset:
+            continue
+        tag = (m.get("config", {}).get("extra", {}) or {}).get("platform_tag") \
+            or prior.get("platform_tag")
+        if tag and tag != this_tag:
+            others.append((path, prior, tag))
+    if not others:
+        print(f"[overlap] no prior {dataset} artefact from another platform; "
+              f"nothing to diff. Run this on the other machine and rerun.")
+        return None
+    report = []
+    a = _flatten(payload.get("blocks"))
+    for path, prior, tag in others:
+        b = _flatten(prior.get("blocks"))
+        keys = sorted(set(a) | set(b))
+        diffs = []
+        for k in keys:
+            va, vb = a.get(k, "<absent>"), b.get(k, "<absent>")
+            if isinstance(va, float) and isinstance(vb, float):
+                if abs(va - vb) <= 1e-12 or (va == vb):
+                    continue
+            elif va == vb:
+                continue
+            diffs.append(dict(field=k, this=va, other=vb))
+        print(f"\n[overlap] vs {path.name}  ({tag})")
+        print(f"[overlap]   {len(diffs)} differing field(s) of {len(keys)}")
+        for d in diffs[:40]:
+            print(f"    {d['field']}\n      this ({this_tag}): {d['this']}"
+                  f"\n      other ({tag}): {d['other']}")
+        if len(diffs) > 40:
+            print(f"    ... {len(diffs)-40} more")
+        report.append(dict(compared_to=str(path.name), other_platform=tag,
+                           n_fields=len(keys), n_differing=len(diffs),
+                           differing=diffs))
+    return report
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True, choices=sorted(LOADERS))
+    ap.add_argument("--dataset", choices=sorted(LOADERS),
+                    help="profile one dataset")
+    ap.add_argument("--selftest", action="store_true",
+                    help="fixed-seed reproduction gate; exits non-zero on "
+                         "mismatch or while the constants are unpinned")
+    ap.add_argument("--overlap-check", dest="overlap_check",
+                    choices=sorted(LOADERS), nargs="?", const="abide",
+                    help="profile a dataset, tag it with the platform, and "
+                         "diff against any prior run from another machine "
+                         "(default: abide)")
+    ap.add_argument("--abide-npz",
+                    default="/Users/gauravgoyal/Downloads/meridian/data/"
+                            "processed/abide_harmonized.npz",
+                    help="path to the ABIDE npz (differs per machine)")
     ap.add_argument("--hvg", type=int, default=None, help="Frangieh only")
     ap.add_argument("--n-spec-cap", type=int, default=None,
                     help="override the spectrum subsample caps (default 2000,8000)")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
+    if a.selftest:
+        raise SystemExit(run_selftest())
+    dataset = a.dataset or a.overlap_check
+    if not dataset:
+        ap.error("give --dataset, --selftest, or --overlap-check")
+    a.dataset = dataset
     if a.n_spec_cap:
         global SPEC_CAPS
         SPEC_CAPS = (a.n_spec_cap,)
@@ -323,6 +560,7 @@ def main():
 
     payload = dict(
         dataset=a.dataset, blocks=blocks,
+        platform_tag=RIO.platform_tag(),
         nmin_set=list(NMIN_SET),
         power_floors=dict(hard=POWER_FLOOR_HARD, soft=POWER_FLOOR_SOFT,
                           source="measured under LFC on the simulator; "
@@ -338,12 +576,22 @@ def main():
         dict(alpha=None, B=None, n_e=None, d=None, d_latent=None, D=None,
              n_env=None, seeds=[a.seed], draws_per_point=None,
              dataset=a.dataset, hvg=a.hvg, nmin_set=list(NMIN_SET),
-             spec_caps=list(SPEC_CAPS)),
+             spec_caps=list(SPEC_CAPS), platform_tag=RIO.platform_tag(),
+             overlap_check=bool(a.overlap_check)),
         status="CURRENT",
         note=f"descriptive profile of {a.dataset}; no test, no verdict")
     meta["migrated_from"] = None
+    if a.overlap_check:
+        payload["overlap_report"] = diff_against_other_platform(
+            payload, a.dataset, RIO.platform_tag())
     path = RIO.write_results(payload, meta, suffix=f"__{a.dataset}")
     print(f"[write] {path}", flush=True)
+    if a.overlap_check:
+        r = payload.get("overlap_report")
+        if r:
+            tot = sum(x["n_differing"] for x in r)
+            print(f"[overlap] TOTAL differing fields across "
+                  f"{len(r)} comparison(s): {tot}", flush=True)
 
 
 if __name__ == "__main__":

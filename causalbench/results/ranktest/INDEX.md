@@ -19,6 +19,7 @@ Statistics, in the order they were tried and retired:
 |---|---|---|---|---|---|---|
 | alpha_sensitivity | `lfc` | a=0.01 raw 0.015; a=0.01 sta 0.005; a=0.025 raw 0.030; a=0.025 sta 0.025; a=0.05 raw 0.060; a=0.05 sta 0.065 | `117a464` | CURRENT | - | `lfc/alpha_sensitivity/2026-08-10T11-02-09.json` |
 | battery | `lfc` | gap_ratio separation, AUC by n_e: 500:0.602; 2000:0.717; 8000:0.831; 20000:0.834 | `460a064` | CURRENT | - | `lfc/battery/2026-08-10T11-50-50__gap_ratio_separation.json` |
+| descriptives | `descriptive` |  | `2c6ae1b` | CURRENT | - | `descriptive/descriptives/2026-08-10T15-22-57__abide.json` |
 | envelope | `lfc` | d=5 raw s*=0.100; d=5 sta s*=0.100; d=10 raw s*=0.100; d=10 sta s*=0.100; d=20 raw s*=0.030; d=20 sta s*=0.059; d=40 raw s*=0.034; d=40 sta s*=0.046; d=80 raw s*=0.000; d=80 sta s*=0.000 | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44.json` |
 | envelope | `lfc` | TASK A  s* decay vs d_latent. n_e=2000 B=500 10x40=400 draws/point | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44__decay_raw_log.json` |
 | envelope | `lfc` | s=0 CONTROL (exactly linear mixing), k=1, n_e=2000, 400 draws/point | `bd2eecc` | CURRENT | - | `lfc/envelope/2026-08-10T12-30-44__s0_linear_control.json` |
