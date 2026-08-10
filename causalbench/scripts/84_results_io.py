@@ -3,9 +3,9 @@
 LAYOUT
     causalbench/results/ranktest/<statistic>/<gate>/<timestamp>.json
 
-    statistic in {diy_retired, cfa_kappa, cft, lfc}
+    statistic in {diy_retired, cfa_kappa, cft, lfc, descriptive}
     gate      in {acceptance, gate0, gate1, gate2, envelope, power_soft,
-                  power_hard, alpha_sensitivity, battery}
+                  power_hard, alpha_sensitivity, battery, descriptives}
 
 WHY THE META BLOCK IS MANDATORY. Twice in this lane a number was quoted from
 a file whose producing statistic was not recoverable from its name, and once a
@@ -26,9 +26,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE.parent / "results" / "ranktest"
 
-STATISTICS = ("diy_retired", "cfa_kappa", "cft", "lfc")
+# "descriptive" is not a test statistic: it labels artefacts that involve
+# no hypothesis test at all, e.g. dataset profiling.
+STATISTICS = ("diy_retired", "cfa_kappa", "cft", "lfc", "descriptive")
 GATES = ("acceptance", "gate0", "gate1", "gate2", "envelope",
-         "power_soft", "power_hard", "alpha_sensitivity", "battery")
+         "power_soft", "power_hard", "alpha_sensitivity", "battery",
+         "descriptives")
 
 # Every one of these must be PRESENT. A value of None is allowed where the
 # field genuinely does not apply to that run (e.g. d_latent for a pure
