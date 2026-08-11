@@ -4,7 +4,7 @@
     {
       "label": "abide",
       "modality": "fMRI",
-      "source": "/Users/gauravgoyal/Downloads/meridian/data/processed/abide_harmonized.npz",
+      "source": "/workspace/ranktest-diagnostics/data/abide_harmonized.npz",
       "n_subjects": 742,
       "n_conditions": 14,
       "conditions": [
@@ -68,14 +68,14 @@
           "n_control_available": 86072,
           "n_genes": 200,
           "rank_bound": 200,
-          "participation_ratio": 32.95320714374532,
+          "participation_ratio": 32.95320714374538,
           "effective_rank_exp_spectral_entropy": 75.15332715845304,
           "n_components_for_variance": {
             "80pct": 64,
             "90pct": 108,
             "95pct": 143
           },
-          "top_eigenvalue_share": 0.09719140632371923,
+          "top_eigenvalue_share": 0.09719140632371916,
           "n_nonzero_eigenvalues": 200,
           "matches_fit_pca_basis": true,
           "fit_pca_mu_identical": true
@@ -92,7 +92,7 @@
             "90pct": 114,
             "95pct": 149
           },
-          "top_eigenvalue_share": 0.10064287538560088,
+          "top_eigenvalue_share": 0.10064287538560081,
           "n_nonzero_eigenvalues": 200,
           "matches_fit_pca_basis": true,
           "fit_pca_mu_identical": true
@@ -105,14 +105,14 @@
         ],
         "dtype": "float64",
         "sum": -35714.17074374485,
-        "sumsq": 9164438648.755203,
+        "sumsq": 9164438648.755205,
         "nan_count": 0
       },
       "spectrum_caveat": "no control condition; spectrum is over ALL pooled frames and is not comparable to the Perturb-seq control spectra",
       "environment_caveat": "environment == acquisition SITE, not an intervention; this is a descriptive analogue only"
     }
   ],
-  "platform_tag": "Darwin-arm64-py3.11.15",
+  "platform_tag": "Linux-x86_64-py3.10.12",
   "nmin_set": [
     50,
     125,
@@ -127,12 +127,12 @@
   },
   "contains_no_test": true,
   "disclaimer": "DESCRIPTIVE ONLY. No rank test was run and no assumption verdict is expressed or implied. Phase B is not authorised.",
-  "overlap_report": null,
+  "peak_rss_mb": 723.8,
   "meta": {
     "statistic": "descriptive",
     "gate": "descriptives",
-    "git_commit": "2c6ae1b",
-    "timestamp": "2026-08-10T15:22:57",
+    "git_commit": "f143af3",
+    "timestamp": "2026-08-11T04:20:39Z",
     "config": {
       "alpha": null,
       "B": null,
@@ -147,6 +147,7 @@
       "draws_per_point": null,
       "extra": {
         "dataset": "abide",
+        "arm": null,
         "hvg": null,
         "nmin_set": [
           50,
@@ -159,25 +160,28 @@
           2000,
           8000
         ],
-        "platform_tag": "Darwin-arm64-py3.11.15",
-        "overlap_check": true
+        "platform_tag": "Linux-x86_64-py3.10.12",
+        "timezone": "UTC",
+        "timestamp_suffix": "Z",
+        "peak_rss_mb": 369.6,
+        "overlap_check": false
       }
     },
     "versions": {
-      "python": "3.11.15",
-      "numpy": "2.4.6",
-      "scipy": "1.17.1",
-      "pandas": "3.0.3",
-      "sklearn": "1.9.0",
-      "scanpy": null,
-      "anndata": null,
+      "python": "3.10.12",
+      "numpy": "2.2.6",
+      "scipy": "1.15.3",
+      "pandas": "2.3.3",
+      "sklearn": "1.7.2",
+      "scanpy": "1.11.5",
+      "anndata": "0.11.4",
       "platform": {
-        "system": "Darwin",
-        "release": "25.2.0",
-        "machine": "arm64",
-        "processor": "arm",
+        "system": "Linux",
+        "release": "5.15.0-1065-nvidia",
+        "machine": "x86_64",
+        "processor": "x86_64",
         "python_implementation": "CPython",
-        "numpy_blas": "accelerate"
+        "numpy_blas": "scipy-openblas"
       }
     },
     "superseded_by": null,

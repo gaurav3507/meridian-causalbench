@@ -23,8 +23,8 @@ from the obvious guess, and which this file therefore handles explicitly:
     used as a substitute.
 
 Usage:
-    python causalbench/scripts/87_make_paper_tables.py
-    python causalbench/scripts/87_make_paper_tables.py --dir <artefact dir>
+    python causalbench/scripts/88_make_descriptive_tables.py
+    python causalbench/scripts/88_make_descriptive_tables.py --dir <artefact dir>
 """
 import argparse
 import csv
@@ -50,15 +50,21 @@ def rel(p):
 
 HARD_FLOOR, SOFT_FLOOR = 125, 8000
 
-FOOTNOTE_B = ("Dimension estimates are sample-size-dependent lower bounds; "
-              "compare only at matched n_control_used. Estimators disagree by "
-              "up to ~1.8x and all three are reported.")
-FOOTNOTE_A_FMRI = (
-    "fMRI environments are acquisition sites or task conditions, not "
-    "interventions; the attrition curve is a descriptive analogue and not an "
-    "interventional one. HCP and ABIDE have no control condition, so their "
-    "spectra are over pooled frames and are NOT comparable to the Perturb-seq "
-    "control-cell spectra.")
+FOOTNOTE_B = (
+    "Dimension estimates are sample-size-dependent lower bounds; compare only "
+    "at matched n_control_used. Where n_control_used < n_genes the sample "
+    "covariance is rank-deficient (rank bound n-1) and both effective rank and "
+    "the variance-threshold counts are contaminated by sampling noise in the "
+    "trailing eigenvalues: across the three Frangieh arms they track a roughly "
+    "fixed fraction of n (effective rank 0.56-0.64n, 95pct count 0.71-0.80n). "
+    "Participation ratio is dominated by the leading eigenvalues and is the "
+    "estimator comparable across datasets.")
+FOOTNOTE_A = (
+    "fMRI environments are acquisition sites (ABIDE) or task conditions (HCP), "
+    "not interventions; a site shifts measurement rather than mechanism, so the "
+    "attrition curve is a descriptive analogue and not an interventional one. "
+    "Neither has a control condition, so no control-covariance spectrum is "
+    "computed and their rows are absent from Table B.")
 
 FMRI_DATASETS = {"hcp", "abide"}
 
@@ -176,22 +182,53 @@ def build_table_a(kept):
 
 
 def build_table_b(kept):
+    """Perturb-seq rows only.
+
+    HCP and ABIDE DO carry a spectrum, but it is over pooled frames with no
+    control condition, so it is not the same quantity as a control-covariance
+    spectrum and must not sit in the same column. They get one explicit
+    "n/a - no control condition" row each rather than zeros.
+    """
     rows = []
     for _, doc in kept:
         for b in doc.get("blocks") or []:
             if not isinstance(b, dict):
                 continue
-            for key, cap, dp in dim_blocks(b):
+            ctrl = b.get("latent_dimension_from_controls")
+            if not isinstance(ctrl, dict):
+                # fMRI, or a loader-metadata block. Only emit the n/a row for a
+                # real profile block, identified by it having attrition data.
+                if "environment_attrition" in b:
+                    rows.append({
+                        "dataset": dataset_label(doc, b), "spec_cap": NA,
+                        "n_genes": NA, "n_control_available": NA,
+                        "n_control_used": NA, "p_over_n": NA,
+                        "n_lt_p_flag": NA,
+                        "participation_ratio": "n/a - no control condition",
+                        "effective_rank_exp_spectral_entropy": NA,
+                        "n_comp_80pct": NA, "n_comp_90pct": NA,
+                        "n_comp_95pct": NA, "top_eigenvalue_share": NA,
+                    })
+                continue
+            for cap, dp in sorted(ctrl.items(),
+                                  key=lambda kv: int(kv[0])
+                                  if str(kv[0]).isdigit() else 0):
+                if not isinstance(dp, dict):
+                    continue
+                n_genes = g(dp, "n_genes", default=g(b, "n_features"))
+                n_used = g(dp, "n_control_used")
+                # DERIVED here, not read from the artefact
+                pon = (round(n_genes / n_used, 3)
+                       if isinstance(n_genes, (int, float))
+                       and isinstance(n_used, (int, float)) and n_used else NA)
+                flag = ("RANK-DEFICIENT"
+                        if isinstance(pon, float) and pon > 1 else "")
                 rows.append({
-                    "dataset": dataset_label(doc, b),
-                    "spectrum_source": key.replace("latent_dimension_", ""),
-                    "spec_cap": cap,
-                    "n_features": g(b, "n_features",
-                                    default=g(b, "n_regions",
-                                              default=g(dp, "n_genes"))),
+                    "dataset": dataset_label(doc, b), "spec_cap": cap,
+                    "n_genes": n_genes,
                     "n_control_available": g(dp, "n_control_available"),
-                    "n_control_used": g(dp, "n_control_used"),
-                    "rank_bound": g(dp, "rank_bound"),
+                    "n_control_used": n_used,
+                    "p_over_n": pon, "n_lt_p_flag": flag,
                     "participation_ratio": g(dp, "participation_ratio"),
                     "effective_rank_exp_spectral_entropy":
                         g(dp, "effective_rank_exp_spectral_entropy"),
@@ -216,7 +253,7 @@ def header_lines(kept, skipped, dirpath):
         commits.setdefault(g(doc, "meta", "git_commit", default=NA),
                            []).append(p.name)
     L = [f"generated   : {utc_now()}",
-         f"generator   : 87_make_paper_tables.py @ {script_commit()}",
+         f"generator   : 88_make_descriptive_tables.py @ {script_commit()}",
          f"source dir  : {rel(dirpath)}",
          f"artefacts   : {len(kept)} CURRENT, {len(skipped)} skipped"]
     if len(commits) > 1:
@@ -279,10 +316,8 @@ def main():
     print("\n".join(head))
 
     rows_a = build_table_a(kept)
-    has_fmri = any(str(r["dataset"]).split("_")[0] in FMRI_DATASETS
-                   for r in rows_a)
-    fa = [FOOTNOTE_A_FMRI] if has_fmri else []
-    pa = write_outputs("table_a_environment_attrition", rows_a, head, fa, a.outdir)
+    pa = write_outputs("table_a_environment_attrition", rows_a, head,
+                       [FOOTNOTE_A], a.outdir)
 
     rows_b = build_table_b(kept)
     pb = write_outputs("table_b_dimension", rows_b, head, [FOOTNOTE_B], a.outdir)

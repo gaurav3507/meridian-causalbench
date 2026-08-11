@@ -338,7 +338,7 @@ def write_index(results_dir=RESULTS):
           "- **HISTORICAL-FOR-COMPARISON-TABLE** rows exist so the paper can show how",
           "  each retired statistic behaved. They are not results about the method as",
           "  it now stands.",
-          "- Regenerate the paper's CSVs with `make_paper_tables.py`. It reads only",
+          "- Regenerate the paper's CSVs with `87_make_gate_tables.py`. It reads only",
           "  CURRENT artefacts and never re-runs a gate.",
           "",
           "Originals from before the migration are preserved untouched in",

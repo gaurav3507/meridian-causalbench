@@ -14,7 +14,7 @@ Tables:
   (vi)  mixing_envelope.csv      s* by d_latent, with the s=0 linear control
 
 Usage:
-    python causalbench/scripts/make_paper_tables.py [--outdir paper/tables]
+    python causalbench/scripts/87_make_gate_tables.py [--outdir paper/tables]
 """
 import argparse
 import csv

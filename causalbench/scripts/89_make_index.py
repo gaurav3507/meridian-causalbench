@@ -8,8 +8,8 @@ marker at all, so they are shown as-is with " (tz unmarked)" appended rather
 than being guessed at or rewritten. New artefacts are written in UTC with a Z.
 
 Usage:
-    python causalbench/scripts/88_make_index.py
-    python causalbench/scripts/88_make_index.py --root <dir> --out <file>
+    python causalbench/scripts/89_make_index.py
+    python causalbench/scripts/89_make_index.py --root <dir> --out <file>
 """
 import argparse
 import datetime
@@ -140,11 +140,11 @@ def main():
     L = ["# ranktest results index", "",
          "```",
          f"generated : {utc_now()}",
-         f"generator : 88_make_index.py @ {script_commit()}",
+         f"generator : 89_make_index.py @ {script_commit()}",
          f"root      : {rel(a.root)}",
          f"artefacts : {len(rows)}",
          "```", "",
-         "Regenerate with `python causalbench/scripts/88_make_index.py`. "
+         "Regenerate with `python causalbench/scripts/89_make_index.py`. "
          "Do not hand-edit.", "",
          "Quote only rows in **CURRENT**. Timestamps without a `Z` carry no "
          "timezone marker in the artefact and are shown verbatim.", ""]
