@@ -55,8 +55,8 @@ FOOTNOTE_B = (
     "at matched n_control_used. Where n_control_used < n_genes the sample "
     "covariance is rank-deficient (rank bound n-1) and both effective rank and "
     "the variance-threshold counts are contaminated by sampling noise in the "
-    "trailing eigenvalues: across the three Frangieh arms they track a roughly "
-    "fixed fraction of n (effective rank 0.56-0.64n, 95pct count 0.71-0.80n). "
+    "trailing eigenvalues: at the 8000 cap, effective rank is 0.56-0.64n and "
+    "the 95pct count 0.71-0.80n across the three arms. "
     "Participation ratio is dominated by the leading eigenvalues and is the "
     "estimator comparable across datasets.")
 FOOTNOTE_A = (

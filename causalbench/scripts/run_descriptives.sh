@@ -13,16 +13,20 @@
 # Env overrides:
 #   PY        python to use          (default: the A100 cb venv)
 #   PROJ      project root           (default: /workspace/ranktest-diagnostics)
-#   SCRIPTS   script directory       (default: $PROJ/scripts)
+#   SCRIPTS   script directory       (default: this script's own dir)
 #   RESULTS   artefact directory     (default: causalbench/results/ranktest under the repo)
 #   HVG       Frangieh gene cap      (default: unset, all genes)
+#   ABIDE_NPZ path to the ABIDE npz (default: the A100 data dir)
 
 set -uo pipefail            # deliberately NOT -e: one bad job must not abort
                             # the batch, the summary is what decides the exit
 
 PY="${PY:-/workspace/venvs/cb/bin/python}"
 PROJ="${PROJ:-/workspace/ranktest-diagnostics}"
-SCRIPTS="${SCRIPTS:-$PROJ/scripts}"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+# NOT $PROJ/scripts: that path does not exist on the A100 and the
+# 15:36Z launch died on it. Resolve next to this script, like RESULTS.
+SCRIPTS="${SCRIPTS:-$SELF_DIR}"
 LOGS="$PROJ/logs"
 SCRIPT="$SCRIPTS/85_dataset_descriptives.py"
 RESULTS="${RESULTS:-$(cd "$(dirname "$0")/../results/ranktest" 2>/dev/null && pwd)}"
@@ -52,12 +56,17 @@ JOBS=(
 HVG_ARG=""
 [ -n "${HVG:-}" ] && HVG_ARG="--hvg $HVG"
 
+# Passed explicitly. The Python default used to be a hardcoded Mac
+# path, which failed every A100 batch.
+ABIDE_NPZ="${ABIDE_NPZ:-/workspace/ranktest-diagnostics/data/abide_harmonized.npz}"
+
 echo "=========================================================="
 echo " descriptives batch"
 echo "   python  : $PY"
 echo "   script  : $SCRIPT"
 echo "   logs    : $LOGS"
 echo "   results : $ART_DIR"
+echo "   abide   : $ABIDE_NPZ"
 echo "   started : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "=========================================================="
 
@@ -72,7 +81,10 @@ declare -A RC
 for spec in "${JOBS[@]}"; do
   name="${spec%%|*}"; args="${spec#*|}"
   extra=""
-  case "$name" in frangieh_*) extra="$HVG_ARG";; esac
+  case "$name" in
+    frangieh_*) extra="$HVG_ARG";;
+    abide)      extra="--abide-npz $ABIDE_NPZ";;
+  esac
   echo ""
   echo "--- [$name] $(date -u +%H:%M:%SZ) ---"
   # shellcheck disable=SC2086

@@ -14,20 +14,22 @@ decays smoothly with no knee, and no eigenvalue bulk sits inside the MP
 support, then "low-dimensional latent plus noise" does not describe the data.
 The figure has to make that visible rather than assert it.
 
-STATUS: CANNOT RUN YET. The descriptives artefacts store only spectrum
-SUMMARIES (participation_ratio, effective_rank_exp_spectral_entropy,
-n_components_for_variance, top_eigenvalue_share, n_nonzero_eigenvalues,
-rank_bound). The full eigenvalue array is NOT persisted anywhere, and it
-cannot be reconstructed from those summaries: infinitely many spectra share a
-given participation ratio and entropy. This script therefore reads an
-`eigenvalues` key and exits with a clear message when it is absent. It does
-NOT recompute, approximate, or synthesise a spectrum, because a fabricated
-curve in a figure whose entire purpose is to show a real shape would be worse
-than no figure.
+WHERE THE DATA COMES FROM. 85_dataset_descriptives.py persists the raw
+eigenvalue array to a compressed sidecar beside each JSON, and the JSON
+records the sidecar basename, the key, and an integrity triple
+(lam_len / lam_sum / lam_sumsq). This script VERIFIES that triple against the
+loaded array before plotting anything and exits non-zero on mismatch, naming
+both values. It never recomputes, approximates or synthesises a spectrum: a
+fabricated curve in a figure whose entire purpose is to show a real shape
+would be worse than no figure. Artefacts written before spectrum persistence
+carry no sidecar; the script says so and exits cleanly rather than crashing.
 
-To enable it, 85_dataset_descriptives.py must persist the eigenvalue array
-(spectrum_estimators already computes it as `lam` and discards it), and the
-A100 profiling must be re-run. That re-run is Gaurav's decision.
+TWO FIGURES. The primary is at the MATCHED cap n=2000, because that is the
+comparison where sample size is held constant across a 36x range of feature
+counts (651 genes for RPE1 up to 23712 for Frangieh), so differences in shape
+cannot be attributed to differing n. The 8000-cap version is emitted second as
+a sample-size sensitivity check; there n varies across panels because several
+control pools are smaller than the cap.
 
 MARCHENKO-PASTUR, from first principles. For a p-variate sample covariance
 built from n iid samples whose population covariance is sigma^2 * I, with
@@ -67,7 +69,12 @@ OUT_DIR = REPO / "causalbench/paper/figures"
 # only the control-cell spectra defend the dimension claim; the fMRI pooled
 # spectra are a different quantity and are deliberately not panelled here
 CTRL_KEY = "latent_dimension_from_controls"
-EIG_KEYS = ("eigenvalues", "eigenvalue_array", "lam", "spectrum")
+# Eigenvalues live in a COMPRESSED SIDECAR beside the JSON, not inline: at cap
+# 8000 Frangieh alone is 5707 float64 and there are 12 control-spectrum blocks.
+# The JSON records the sidecar basename, the key inside it, and the integrity
+# triple (lam_len / lam_sum / lam_sumsq) that the array must reproduce.
+INTEGRITY = ("lam_len", "lam_sum", "lam_sumsq")
+INTEGRITY_RTOL = 1e-12
 
 
 def utc_now():
@@ -83,14 +90,49 @@ def rel(p):
         return str(p)
 
 
-def find_eigenvalues(dp):
-    """Return the stored eigenvalue array, or None. Never reconstructs one."""
-    for k in EIG_KEYS:
-        v = dp.get(k)
-        if isinstance(v, list) and len(v) > 2 and all(
-                isinstance(x, (int, float)) for x in v[:3]):
-            return v, k
-    return None, None
+def load_spectrum(dp, json_path):
+    """Load the sidecar array and VERIFY it against the JSON before use.
+
+    Returns (lam, note). lam is None when the sidecar is simply absent, which
+    is not an error: it means the profiler predates spectrum persistence.
+    A sidecar that is present but disagrees with its JSON IS an error and
+    raises, because a silently-mismatched sidecar is precisely the stale
+    artefact this project has been bitten by twice.
+    """
+    import numpy as np
+    name, key = dp.get("spectra_sidecar"), dp.get("spectra_key")
+    if not name or not key:
+        return None, "no spectra_sidecar/spectra_key in the JSON"
+    sc = Path(json_path).parent / name
+    if not sc.exists():
+        return None, f"sidecar named but missing on disk: {name}"
+    with np.load(sc) as z:
+        if key not in z.files:
+            raise SystemExit(
+                f"[fatal] sidecar {name} has no key {key!r}; "
+                f"it holds {sorted(z.files)}")
+        lam = np.asarray(z[key], dtype=np.float64)
+
+    got = {"lam_len": int(lam.size), "lam_sum": float(lam.sum()),
+           "lam_sumsq": float((lam ** 2).sum())}
+    for f in INTEGRITY:
+        exp = dp.get(f)
+        if exp is None:
+            raise SystemExit(f"[fatal] JSON is missing integrity field {f!r} "
+                             f"for key {key!r}; refusing to plot unverified data")
+        if f == "lam_len":
+            ok = int(got[f]) == int(exp)
+        else:
+            ok = abs(got[f] - float(exp)) <= INTEGRITY_RTOL * max(
+                abs(float(exp)), 1e-300)
+        if not ok:
+            raise SystemExit(
+                f"[fatal] INTEGRITY MISMATCH for {key!r} in {name}\n"
+                f"         {f}: JSON says {exp!r}, sidecar array gives "
+                f"{got[f]!r}\n"
+                f"         The sidecar is not the array the JSON summarises. "
+                f"Refusing to plot.")
+    return lam, "verified"
 
 
 def mp_upper_edge(n, p, sigma2):
@@ -133,12 +175,11 @@ def collect(dirpath):
             for cap, dp in (b[CTRL_KEY] or {}).items():
                 if not isinstance(dp, dict):
                     continue
-                lam, key = find_eigenvalues(dp)
+                lam, note = load_spectrum(dp, p)
                 if lam is None:
-                    missing.append((label, cap, p.name))
+                    missing.append((label, cap, p.name, note))
                 else:
-                    panels.append(dict(label=label, cap=cap, lam=lam,
-                                       eig_key=key,
+                    panels.append(dict(label=label, cap=str(cap), lam=lam,
                                        n=dp.get("n_control_used"),
                                        p=dp.get("n_genes"),
                                        pr=dp.get("participation_ratio")))
@@ -162,9 +203,8 @@ def main():
         print("=" * 74)
         print(f"  source dir : {rel(a.dir)}")
         print(f"  checked    : {len(missing)} control-spectrum block(s)")
-        for label, cap, fn in missing[:12]:
-            print(f"    {label:<22} cap={cap:<6} in {fn}")
-        print(f"  looked for keys: {', '.join(EIG_KEYS)}")
+        for label, cap, fn, note in missing[:12]:
+            print(f"    {label:<22} cap={cap:<6} {note}")
         print("")
         print("  The artefacts persist only SUMMARIES of the spectrum")
         print("  (participation_ratio, effective_rank_exp_spectral_entropy,")
@@ -179,45 +219,67 @@ def main():
         print("  profiling.")
         return 2
 
-    # ---- from here the data exists; build the figure
+    # ---- from here the data exists; build the figures
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    panels.sort(key=lambda d: (d["label"], str(d["cap"])))
-    ncol = 3
-    nrow = (len(panels) + ncol - 1) // ncol
-    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2 * ncol, 3.4 * nrow),
-                             squeeze=False)
-    for ax, d in zip(axes.ravel(), panels):
-        lam = np.sort(np.asarray(d["lam"], dtype=float))[::-1]
-        share = lam / lam.sum()                      # comparable across p
-        ax.semilogy(np.arange(1, len(share) + 1), share, lw=1.2,
-                    label="observed")
-        s2 = sigma2_from_bulk(lam, a.bulk_frac)
-        edge = mp_upper_edge(d["n"], d["p"], s2)
-        if edge:
-            ax.axhline(edge / lam.sum(), ls="--", lw=1.0, color="crimson",
-                       label="MP upper edge (noise)")
-        if isinstance(d["pr"], (int, float)):
-            ax.axvline(d["pr"], ls=":", lw=1.0, color="navy",
-                       label=f"PR={d['pr']:.0f}")
-        ax.set_title(f"{d['label']}  n={d['n']}  p={d['p']}", fontsize=9)
-        ax.set_xlabel("eigenvalue index")
-        ax.set_ylabel("share of total variance")
-        ax.legend(fontsize=7)
-    for ax in axes.ravel()[len(panels):]:
-        ax.axis("off")
-    fig.suptitle(f"Control-covariance spectra, generated {utc_now()}  "
-                 f"(noise sigma^2 from trailing {a.bulk_frac:.0%} of spectrum)",
-                 fontsize=9)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out / "spectrum.pdf")
-    fig.savefig(out / "spectrum.png", dpi=300)
-    print(f"wrote {rel(out / 'spectrum.pdf')} and spectrum.png ({len(panels)} panels)")
+    caps = sorted({d["cap"] for d in panels}, key=lambda c: int(c))
+    primary = "2000" if "2000" in caps else caps[0]
+    written = []
+
+    for cap in caps:
+        sel = sorted((d for d in panels if d["cap"] == cap),
+                     key=lambda d: d["label"])
+        if not sel:
+            continue
+        is_primary = (cap == primary)
+        ncol = 3
+        nrow = (len(sel) + ncol - 1) // ncol
+        fig, axes = plt.subplots(nrow, ncol, figsize=(4.4 * ncol, 3.5 * nrow),
+                                 squeeze=False)
+        for ax, d in zip(axes.ravel(), sel):
+            lam = np.sort(np.asarray(d["lam"], dtype=float))[::-1]
+            tot = lam.sum()
+            share = lam / tot                    # comparable across differing p
+            ax.semilogy(np.arange(1, len(share) + 1), share, lw=1.2,
+                        color="black", label="observed")
+            s2 = sigma2_from_bulk(lam, a.bulk_frac)
+            edge = mp_upper_edge(d["n"], d["p"], s2)
+            if edge:
+                ax.axhline(edge / tot, ls="--", lw=1.0, color="crimson",
+                           label="MP upper edge (pure noise)")
+            if isinstance(d["pr"], (int, float)):
+                ax.axvline(d["pr"], ls=":", lw=1.2, color="navy",
+                           label=f"participation ratio = {d['pr']:.0f}")
+            ax.set_title(f"{d['label']}   n={d['n']}, p={d['p']}", fontsize=9)
+            ax.set_xlabel("eigenvalue index")
+            ax.set_ylabel("eigenvalue / total variance")
+            ax.legend(fontsize=7, loc="upper right")
+        for ax in axes.ravel()[len(sel):]:
+            ax.axis("off")
+        kind = ("primary: matched sample size" if is_primary
+                else "sensitivity check: n varies across panels")
+        fig.suptitle(
+            f"Control-covariance eigenvalue spectra, cap n={cap}  ({kind})\n"
+            f"MP edge uses sigma^2 = median of the trailing "
+            f"{a.bulk_frac:.0%} of the spectrum, not the mean of all "
+            f"eigenvalues (which the signal inflates)   |   generated "
+            f"{utc_now()}", fontsize=9)
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        stem = f"spectrum_cap{cap}" + ("_primary" if is_primary else
+                                       "_sensitivity")
+        fig.savefig(out / f"{stem}.pdf")
+        fig.savefig(out / f"{stem}.png", dpi=300)
+        plt.close(fig)
+        written.append(f"{stem}.pdf/.png ({len(sel)} panels)")
+
+    print(f"verified {len(panels)} spectra against their JSON integrity triples")
+    for w in written:
+        print(f"  wrote {rel(out)}/{w}")
     return 0
 
 

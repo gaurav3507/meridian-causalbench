@@ -70,6 +70,13 @@ POWER_FLOOR_SOFT = 8000         # measured, lfc/power_soft
 SPEC_CAPS = (2000, 8000)        # spectrum subsample sizes, for n-sensitivity
 VAR_TARGETS = (0.80, 0.90, 0.95)
 
+# Tried in order when neither --abide-npz nor $ABIDE_NPZ is set. A100 first,
+# because a Mac-only default is what broke the A100 batches.
+ABIDE_CANDIDATES = (
+    "/workspace/ranktest-diagnostics/data/abide_harmonized.npz",
+    "/Users/gauravgoyal/Downloads/meridian/data/processed/abide_harmonized.npz",
+)
+
 HCP_TS = Path("/workspace/meridian-identifiability/hcp/ts")
 HCP_TASKS = ["WM", "GAMBLING", "MOTOR", "LANGUAGE", "SOCIAL", "RELATIONAL",
              "EMOTION"]
@@ -139,7 +146,8 @@ def cell_distribution(counts):
     )
 
 
-def spectrum_estimators(Xc, cap, rng, check_against_fit_pca=True):
+def spectrum_estimators(Xc, cap, rng, check_against_fit_pca=True,
+                        return_lam=False):
     """Latent-dimension estimators from control cells only.
 
     Returns the three estimators plus the bound they cannot exceed. Nothing
@@ -160,7 +168,8 @@ def spectrum_estimators(Xc, cap, rng, check_against_fit_pca=True):
     lam = lam[lam > 0]
     tot = float(lam.sum())
     if tot <= 0:
-        return dict(n_control_used=n_use, n_genes=int(p), error="zero variance")
+        bad = dict(n_control_used=n_use, n_genes=int(p), error="zero variance")
+        return (bad, None) if return_lam else bad
 
     pr = float(tot ** 2 / float((lam ** 2).sum()))
     pk = lam / tot
@@ -188,7 +197,7 @@ def spectrum_estimators(Xc, cap, rng, check_against_fit_pca=True):
                                 np.ones(d_chk), atol=1e-6)
             out["matches_fit_pca_basis"] = bool(agree)
             out["fit_pca_mu_identical"] = bool(np.allclose(mu, mu2))
-    return out
+    return (out, lam) if return_lam else out
 
 
 def data_fingerprint(X):
@@ -206,12 +215,70 @@ def data_fingerprint(X):
                 nan_count=int(np.isnan(X).sum()))
 
 
-def latent_dim_block(Xc, rng):
-    """Spectrum estimators at each cap, so n-sensitivity is visible."""
-    return {str(cap): spectrum_estimators(Xc, cap, rng) for cap in SPEC_CAPS}
+SUMMARY_TOL = 1e-10
 
 
-def profile_perturb(X, iv, label, rng):
+def summaries_from_lam(lam):
+    """Recompute the reported summaries from an eigenvalue array alone."""
+    lam = np.asarray(lam, dtype=np.float64)
+    tot = float(lam.sum())
+    pk = lam / tot
+    cum = np.cumsum(lam) / tot
+    return dict(
+        participation_ratio=float(tot ** 2 / float((lam ** 2).sum())),
+        effective_rank_exp_spectral_entropy=float(
+            np.exp(-float((pk * np.log(pk)).sum()))),
+        n_components_for_variance={
+            f"{int(t*100)}pct": int(np.searchsorted(cum, t) + 1)
+            for t in VAR_TARGETS},
+        top_eigenvalue_share=float(lam[0] / tot),
+    )
+
+
+def latent_dim_block(Xc, rng, spectra=None, key_prefix=""):
+    """Spectrum estimators at each cap, so n-sensitivity is visible.
+
+    When `spectra` is given, the RAW eigenvalue array for each cap is stashed
+    into it for sidecar persistence, and the JSON records the integrity triple
+    (lam_len / lam_sum / lam_sumsq) plus the key it was stored under. The array
+    is stored exactly as the estimators used it: not normalised, not
+    truncated, not re-sorted. Normalisation belongs in the figure.
+
+    Before recording anything, the reported summaries are RECOMPUTED from the
+    array that will actually be written and compared to the ones already in
+    the block. A mismatch means the persisted array is not the array the
+    summaries came from, which is the stale-artefact failure this project has
+    hit twice, so it raises instead of writing.
+    """
+    out = {}
+    for cap in SPEC_CAPS:
+        res, lam = spectrum_estimators(Xc, cap, rng, return_lam=True)
+        if spectra is not None and lam is not None:
+            chk = summaries_from_lam(lam)
+            for k, v in chk.items():
+                have = res.get(k)
+                if isinstance(v, dict):
+                    if have != v:
+                        raise AssertionError(
+                            f"persisted spectrum disagrees with the reported "
+                            f"summary for {k}: array gives {v}, block has {have}")
+                elif have is None or abs(float(have) - float(v)) > SUMMARY_TOL:
+                    raise AssertionError(
+                        f"persisted spectrum disagrees with the reported "
+                        f"summary for {k}: array gives {v!r}, block has "
+                        f"{have!r} (tol {SUMMARY_TOL:g})")
+            key = f"{key_prefix}__{cap}"
+            spectra[key] = np.asarray(lam, dtype=np.float64)
+            res["spectra_key"] = key
+            res["lam_len"] = int(np.asarray(lam).size)
+            res["lam_sum"] = float(np.asarray(lam, dtype=np.float64).sum())
+            res["lam_sumsq"] = float(
+                (np.asarray(lam, dtype=np.float64) ** 2).sum())
+        out[str(cap)] = res
+    return out
+
+
+def profile_perturb(X, iv, label, rng, spectra=None):
     """One perturbation block: attrition, distribution, control spectrum."""
     iv = np.asarray(iv, dtype=object)
     ctrl_rows = np.where(iv == CTRL_LABEL)[0]
@@ -226,7 +293,8 @@ def profile_perturb(X, iv, label, rng):
         environment_attrition=env_attrition(counts),
         cells_per_environment=cell_distribution(counts),
         latent_dimension_from_controls=(
-            latent_dim_block(X[ctrl_rows], rng) if len(ctrl_rows) >= 50
+            latent_dim_block(X[ctrl_rows], rng, spectra, label)
+            if len(ctrl_rows) >= 50
             else {"error": f"only {len(ctrl_rows)} control cells"}),
         data_fingerprint_controls=(data_fingerprint(X[ctrl_rows])
                                    if len(ctrl_rows) else None),
@@ -238,16 +306,16 @@ def profile_perturb(X, iv, label, rng):
 
 
 # -------------------------------------------------------------------- loaders
-def do_replogle(ds, rng, args):
+def do_replogle(ds, rng, args, spectra=None):
     X, iv, vn = SCREEN.load(ds, False)
-    return [profile_perturb(np.asarray(X), iv, ds, rng)]
+    return [profile_perturb(np.asarray(X), iv, ds, rng, spectra)]
 
 
-def do_norman(rng, args):
+def do_norman(rng, args, spectra=None):
     nor = _load_module(HERE / "40_screen_norman.py", "_norman40")
     got = nor.load_norman()
     X, iv = np.asarray(got[0]), np.asarray(got[1], dtype=object)
-    return [profile_perturb(X, iv, "norman", rng)]
+    return [profile_perturb(X, iv, "norman", rng, spectra)]
 
 
 # arm flag -> the value in RNA_metadata.csv's `condition` column.
@@ -275,7 +343,7 @@ def _resolve_arm(arm, present):
         f"        distinct values found: {sorted(present)!r}")
 
 
-def do_frangieh(rng, args):
+def do_frangieh(rng, args, spectra=None):
     """ONE arm, never pooled. The control basis is fitted WITHIN the arm.
 
     MEMORY. RNA_expression.csv.gz is a dense ~218k-cell CSV, about 24.8 GB
@@ -342,7 +410,8 @@ def do_frangieh(rng, args):
         environment_attrition=env_attrition(counts),
         cells_per_environment=cell_distribution(counts),
         latent_dimension_from_controls=(
-            latent_dim_block(Xc, rng) if Xc.shape[0] >= 50
+            latent_dim_block(Xc, rng, spectra, f"frangieh_{args.arm}")
+            if Xc.shape[0] >= 50
             else {"error": f"only {Xc.shape[0]} control cells read"}),
         data_fingerprint_controls=data_fingerprint(Xc),
         n_targets_in_expression_columns=int(in_cols),
@@ -372,7 +441,7 @@ def do_frangieh(rng, args):
                       "computed")]
 
 
-def do_hcp(rng, args):
+def do_hcp(rng, args, spectra=None):
     """fMRI in the equivalent terms: subjects, conditions, timepoints.
 
     Environment == task condition. 'Cells per environment' == timepoints
@@ -422,7 +491,8 @@ def do_hcp(rng, args):
         environment_attrition=env_attrition(counts),
         cells_per_environment=cell_distribution(counts),
         latent_dimension_from_pooled_runs=(
-            latent_dim_block(Xall, rng) if Xall.shape[0] >= 50 else {}),
+            latent_dim_block(Xall, rng, spectra, 'hcp')
+            if Xall.shape[0] >= 50 else {}),
         spectrum_caveat=("HCP has no control condition, so this spectrum is "
                          "over ALL pooled runs, not a control pool. It is not "
                          "comparable to the Perturb-seq control spectra."),
@@ -435,7 +505,25 @@ def do_hcp(rng, args):
     return [block]
 
 
-def do_abide(rng, args):
+def resolve_abide_npz(flag):
+    """flag -> $ABIDE_NPZ -> candidates. Prints every path tried on failure."""
+    tried = []
+    for src, val in (("--abide-npz", flag),
+                     ("$ABIDE_NPZ", os.environ.get("ABIDE_NPZ"))):
+        if val:
+            tried.append(f"{src}: {val}")
+            if Path(val).exists():
+                return Path(val), tried
+    for c in ABIDE_CANDIDATES:
+        tried.append(f"candidate: {c}")
+        if Path(c).exists():
+            return Path(c), tried
+    sys.exit("[fatal] ABIDE npz not found. Tried, in order:\n  "
+             + "\n  ".join(tried)
+             + "\n  Set --abide-npz or $ABIDE_NPZ.")
+
+
+def do_abide(rng, args, spectra=None):
     """fMRI, meridian-side. Environments are SITES; timepoints are the
     per-subject frames. Small enough to profile on both machines, which is why
     it is the default --overlap-check target.
@@ -443,9 +531,8 @@ def do_abide(rng, args):
     There is no control condition, so the spectrum is over all pooled frames
     and is labelled as such, exactly as for HCP.
     """
-    path = Path(args.abide_npz)
-    if not path.exists():
-        sys.exit(f"[fatal] ABIDE npz not found: {path}  (pass --abide-npz)")
+    path, tried = resolve_abide_npz(args.abide_npz)
+    print(f"[abide] npz: {path}", flush=True)
     z = np.load(path, allow_pickle=True)
     X = np.asarray(z["X"])                      # (subjects, timepoints, regions)
     sites = np.asarray(z["site_ids"]).astype(str)
@@ -463,7 +550,8 @@ def do_abide(rng, args):
         timepoints_per_condition=per_site,
         environment_attrition=env_attrition(counts),
         cells_per_environment=cell_distribution(counts),
-        latent_dimension_from_pooled_frames=latent_dim_block(flat, rng),
+        latent_dimension_from_pooled_frames=latent_dim_block(
+            flat, rng, spectra, 'abide'),
         data_fingerprint=data_fingerprint(flat),
         spectrum_caveat=("no control condition; spectrum is over ALL pooled "
                          "frames and is not comparable to the Perturb-seq "
@@ -478,8 +566,8 @@ def do_abide(rng, args):
     return [block]
 
 
-LOADERS = {"k562": lambda r, a: do_replogle("k562", r, a),
-           "rpe1": lambda r, a: do_replogle("rpe1", r, a),
+LOADERS = {"k562": lambda r, a, sp=None: do_replogle("k562", r, a, sp),
+           "rpe1": lambda r, a, sp=None: do_replogle("rpe1", r, a, sp),
            "norman": do_norman, "frangieh": do_frangieh, "hcp": do_hcp,
            "abide": do_abide}
 
@@ -698,10 +786,11 @@ def main():
                     help="profile a dataset, tag it with the platform, and "
                          "diff against any prior run from another machine "
                          "(default: abide)")
-    ap.add_argument("--abide-npz",
-                    default="/Users/gauravgoyal/Downloads/meridian/data/"
-                            "processed/abide_harmonized.npz",
-                    help="path to the ABIDE npz (differs per machine)")
+    ap.add_argument("--abide-npz", default=None,
+                    help="path to the ABIDE npz. Resolution order: this flag, "
+                         "then $ABIDE_NPZ, then the first existing entry in "
+                         "ABIDE_CANDIDATES. The old hardcoded Mac default "
+                         "failed every A100 batch.")
     ap.add_argument("--arm", choices=sorted(FRANGIEH_ARMS),
                     help="Frangieh arm; REQUIRED with --dataset frangieh and "
                          "rejected with any other dataset")
@@ -732,7 +821,8 @@ def main():
     rng = np.random.default_rng(a.seed)
     print(f"[start] dataset={a.dataset} seed={a.seed} hvg={a.hvg} "
           f"spec_caps={SPEC_CAPS}", flush=True)
-    blocks = LOADERS[a.dataset](rng, a)
+    spectra = {}
+    blocks = LOADERS[a.dataset](rng, a, spectra)
 
     payload = dict(
         dataset=a.dataset, blocks=blocks,
@@ -764,9 +854,27 @@ def main():
         payload["overlap_report"] = diff_against_other_platform(
             payload, a.dataset, RIO.platform_tag())
     tag = a.dataset + (f"_{a.arm}" if a.arm else "")
+    # Sidecar name is derived from (ts, tag), both known here, so the JSON can
+    # record it BEFORE the JSON is written. Basename only: these files move
+    # between machines and an absolute path would not survive the trip.
+    sidecar_name = f"{ts.replace(':', '-')}__{tag}__spectra.npz"
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        for k, v in b.items():
+            if k.startswith("latent_dimension_") and isinstance(v, dict):
+                for cap, dp in v.items():
+                    if isinstance(dp, dict) and "spectra_key" in dp:
+                        dp["spectra_sidecar"] = sidecar_name
+    payload["spectra_sidecar"] = sidecar_name if spectra else None
     payload["peak_rss_mb"] = peak_rss_mb()
     path = RIO.write_results(payload, meta, suffix=f"__{tag}")
     print(f"[write] {path}", flush=True)
+    if spectra:
+        sc = Path(path).parent / sidecar_name
+        np.savez_compressed(sc, **spectra)
+        print(f"[write] {sc}  ({len(spectra)} spectra, "
+              f"{sc.stat().st_size/1e6:.2f} MB)", flush=True)
     print(f"[rss]   peak {peak_rss_mb()} MB", flush=True)
     if a.overlap_check:
         r = payload.get("overlap_report")

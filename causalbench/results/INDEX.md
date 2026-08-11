@@ -1,24 +1,20 @@
 # ranktest results index
 
 ```
-generated : 2026-08-11T04:35:00Z
-generator : 89_make_index.py @ uncommitted
+generated : 2026-08-11T04:44:58Z
+generator : 89_make_index.py @ 5fd095a
 root      : causalbench/results/ranktest
-artefacts : 50
+artefacts : 46
 ```
 
 Regenerate with `python causalbench/scripts/89_make_index.py`. Do not hand-edit.
 
 Quote only rows in **CURRENT**. Timestamps without a `Z` carry no timezone marker in the artefact and are shown verbatim.
 
-## CURRENT (26)
+## CURRENT (22)
 
 | statistic | gate | dataset | timestamp | commit | status | superseded_by | path |
 |---|---|---|---|---|---|---|---|
-| descriptive | descriptives | k562 | 2026-08-10T12:28:22 (tz unmarked) | `c980533` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives_superseded_2026-08-10/2026-08-10T12-28-22__k562.json` |
-| descriptive | descriptives | rpe1 | 2026-08-10T13:06:00 (tz unmarked) | `c980533` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives_superseded_2026-08-10/2026-08-10T13-06-00__rpe1.json` |
-| descriptive | descriptives | norman | 2026-08-10T13:12:19 (tz unmarked) | `c980533` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives_superseded_2026-08-10/2026-08-10T13-12-19__norman.json` |
-| descriptive | descriptives | hcp | 2026-08-10T13:12:30 (tz unmarked) | `c980533` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives_superseded_2026-08-10/2026-08-10T13-12-30__hcp.json` |
 | descriptive | descriptives | k562 | 2026-08-10T15:37:05Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-37-05Z__k562.json` |
 | descriptive | descriptives | rpe1 | 2026-08-10T15:37:18Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-37-18Z__rpe1.json` |
 | descriptive | descriptives | norman | 2026-08-10T15:44:43Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-44-43Z__norman.json` |

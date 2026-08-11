@@ -1,8 +1,8 @@
 # table_b_dimension
 
 ```
-generated   : 2026-08-11T04:33:27Z
-generator   : 88_make_descriptive_tables.py @ uncommitted
+generated   : 2026-08-11T04:44:58Z
+generator   : 88_make_descriptive_tables.py @ 5fd095a
 source dir  : causalbench/results/ranktest/descriptive/descriptives
 artefacts   : 8 CURRENT, 0 skipped
   source    : 2026-08-10T15-37-05Z__k562.json   meta.git_commit=f143af3
@@ -32,4 +32,4 @@ artefacts   : 8 CURRENT, 0 skipped
 | rpe1 | 2000 | 651 | 11485 | 2000 | 0.326 |  | 234.5 | 436.4 | 314 | 418 | 496 | 0.04108 |
 | rpe1 | 8000 | 651 | 11485 | 8000 | 0.081 |  | 261.6 | 490.4 | 368 | 469 | 538 | 0.04031 |
 
-> Dimension estimates are sample-size-dependent lower bounds; compare only at matched n_control_used. Where n_control_used < n_genes the sample covariance is rank-deficient (rank bound n-1) and both effective rank and the variance-threshold counts are contaminated by sampling noise in the trailing eigenvalues: across the three Frangieh arms they track a roughly fixed fraction of n (effective rank 0.56-0.64n, 95pct count 0.71-0.80n). Participation ratio is dominated by the leading eigenvalues and is the estimator comparable across datasets.
+> Dimension estimates are sample-size-dependent lower bounds; compare only at matched n_control_used. Where n_control_used < n_genes the sample covariance is rank-deficient (rank bound n-1) and both effective rank and the variance-threshold counts are contaminated by sampling noise in the trailing eigenvalues: at the 8000 cap, effective rank is 0.56-0.64n and the 95pct count 0.71-0.80n across the three arms. Participation ratio is dominated by the leading eigenvalues and is the estimator comparable across datasets.

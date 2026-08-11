@@ -1,8 +1,8 @@
 # table_a_environment_attrition
 
 ```
-generated   : 2026-08-11T04:33:27Z
-generator   : 88_make_descriptive_tables.py @ uncommitted
+generated   : 2026-08-11T04:44:58Z
+generator   : 88_make_descriptive_tables.py @ 5fd095a
 source dir  : causalbench/results/ranktest/descriptive/descriptives
 artefacts   : 8 CURRENT, 0 skipped
   source    : 2026-08-10T15-37-05Z__k562.json   meta.git_commit=f143af3
