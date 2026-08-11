@@ -45,7 +45,12 @@
           "top_eigenvalue_share": 0.04114083919476672,
           "n_nonzero_eigenvalues": 2000,
           "matches_fit_pca_basis": true,
-          "fit_pca_mu_identical": true
+          "fit_pca_mu_identical": true,
+          "spectra_key": "frangieh_coculture__2000",
+          "lam_len": 2000,
+          "lam_sum": 33048.49772568664,
+          "lam_sumsq": 2629450.7168090316,
+          "spectra_sidecar": "2026-08-11T06-53-37Z__frangieh_coculture__spectra.npz"
         },
         "8000": {
           "n_control_used": 5707,
@@ -62,7 +67,12 @@
           "top_eigenvalue_share": 0.040221447231531024,
           "n_nonzero_eigenvalues": 5707,
           "matches_fit_pca_basis": true,
-          "fit_pca_mu_identical": true
+          "fit_pca_mu_identical": true,
+          "spectra_key": "frangieh_coculture__8000",
+          "lam_len": 5707,
+          "lam_sum": 33004.90938065729,
+          "lam_sumsq": 2214716.983368999,
+          "spectra_sidecar": "2026-08-11T06-53-37Z__frangieh_coculture__spectra.npz"
         }
       },
       "data_fingerprint_controls": {
@@ -120,12 +130,13 @@
   },
   "contains_no_test": true,
   "disclaimer": "DESCRIPTIVE ONLY. No rank test was run and no assumption verdict is expressed or implied. Phase B is not authorised.",
-  "peak_rss_mb": 10599.3,
+  "spectra_sidecar": "2026-08-11T06-53-37Z__frangieh_coculture__spectra.npz",
+  "peak_rss_mb": 10643.8,
   "meta": {
     "statistic": "descriptive",
     "gate": "descriptives",
-    "git_commit": "f143af3",
-    "timestamp": "2026-08-10T16:15:14Z",
+    "git_commit": "8181090",
+    "timestamp": "2026-08-11T06:53:37Z",
     "config": {
       "alpha": null,
       "B": null,
@@ -156,7 +167,7 @@
         "platform_tag": "Linux-x86_64-py3.10.12",
         "timezone": "UTC",
         "timestamp_suffix": "Z",
-        "peak_rss_mb": 10599.3,
+        "peak_rss_mb": 10643.8,
         "overlap_check": false
       }
     },

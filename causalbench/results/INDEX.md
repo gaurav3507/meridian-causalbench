@@ -1,7 +1,7 @@
 # ranktest results index
 
 ```
-generated : 2026-08-11T04:44:58Z
+generated : 2026-08-11T08:15:00Z
 generator : 89_make_index.py @ 5fd095a
 root      : causalbench/results/ranktest
 artefacts : 46
@@ -15,14 +15,14 @@ Quote only rows in **CURRENT**. Timestamps without a `Z` carry no timezone marke
 
 | statistic | gate | dataset | timestamp | commit | status | superseded_by | path |
 |---|---|---|---|---|---|---|---|
-| descriptive | descriptives | k562 | 2026-08-10T15:37:05Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-37-05Z__k562.json` |
-| descriptive | descriptives | rpe1 | 2026-08-10T15:37:18Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-37-18Z__rpe1.json` |
-| descriptive | descriptives | norman | 2026-08-10T15:44:43Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T15-44-43Z__norman.json` |
-| descriptive | descriptives | frangieh (coculture) | 2026-08-10T16:15:14Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T16-15-14Z__frangieh_coculture.json` |
-| descriptive | descriptives | frangieh (control) | 2026-08-10T16:35:44Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T16-35-44Z__frangieh_control.json` |
-| descriptive | descriptives | frangieh (ifng) | 2026-08-10T17:08:11Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T17-08-11Z__frangieh_ifng.json` |
-| descriptive | descriptives | hcp | 2026-08-10T17:08:19Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-10T17-08-19Z__hcp.json` |
-| descriptive | descriptives | abide | 2026-08-11T04:20:39Z | `f143af3` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T04-20-39Z__abide.json` |
+| descriptive | descriptives | k562 | 2026-08-11T06:12:06Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T06-12-06Z__k562.json` |
+| descriptive | descriptives | rpe1 | 2026-08-11T06:12:20Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T06-12-20Z__rpe1.json` |
+| descriptive | descriptives | norman | 2026-08-11T06:20:34Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T06-20-34Z__norman.json` |
+| descriptive | descriptives | frangieh (coculture) | 2026-08-11T06:53:37Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T06-53-37Z__frangieh_coculture.json` |
+| descriptive | descriptives | frangieh (control) | 2026-08-11T07:13:08Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T07-13-08Z__frangieh_control.json` |
+| descriptive | descriptives | frangieh (ifng) | 2026-08-11T07:47:30Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T07-47-30Z__frangieh_ifng.json` |
+| descriptive | descriptives | hcp | 2026-08-11T07:47:38Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T07-47-38Z__hcp.json` |
+| descriptive | descriptives | abide | 2026-08-11T07:47:45Z | `8181090` | CURRENT | - | `causalbench/results/ranktest/descriptive/descriptives/2026-08-11T07-47-45Z__abide.json` |
 | lfc | alpha_sensitivity | n/a | 2026-08-10T11:02:09 (tz unmarked) | `117a464` | CURRENT | - | `causalbench/results/ranktest/lfc/alpha_sensitivity/2026-08-10T11-02-09.json` |
 | lfc | battery | n/a | 2026-08-10T11:50:50 (tz unmarked) | `460a064` | CURRENT | - | `causalbench/results/ranktest/lfc/battery/2026-08-10T11-50-50__gap_ratio_separation.json` |
 | lfc | envelope | n/a | 2026-08-10T12:30:44 (tz unmarked) | `bd2eecc` | CURRENT | - | `causalbench/results/ranktest/lfc/envelope/2026-08-10T12-30-44.json` |

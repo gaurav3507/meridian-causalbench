@@ -76,6 +76,15 @@ CTRL_KEY = "latent_dimension_from_controls"
 INTEGRITY = ("lam_len", "lam_sum", "lam_sumsq")
 INTEGRITY_RTOL = 1e-12
 
+# NUMERICAL RANK. Eigenvalues at or below NUM_RANK_TOL * lambda_max are
+# floating-point residue from the SVD, not data. Before persistence this was
+# invisible; with the real spectra it dominates four of the six panels, where
+# the tail runs to ~1e-159 and a log axis then spans 160 orders of magnitude of
+# noise. Worse, sigma^2 taken as the median of the trailing half collapses to
+# ~0 and the Marchenko-Pastur edge becomes meaningless. So the spectrum is
+# truncated at the numerical rank BEFORE sigma^2 and BEFORE plotting.
+NUM_RANK_TOL = 1e-10
+
 
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).strftime(
@@ -143,11 +152,26 @@ def mp_upper_edge(n, p, sigma2):
     return float(sigma2) * (1.0 + gamma ** 0.5) ** 2
 
 
-def sigma2_from_bulk(lam, frac=0.5):
-    """Noise variance from the TRAILING fraction of the spectrum.
+def numerical_rank(lam, tol=NUM_RANK_TOL):
+    """Count of eigenvalues above tol * lambda_max, and the truncated array.
 
-    The mean of all eigenvalues is inflated by the signal, so it would push
-    the MP edge up and hide exactly what the figure is meant to show.
+    Everything past this index is floating-point residue from the SVD. It is
+    dropped rather than plotted: it is not data, and leaving it in destroys
+    both the y-axis scale and the sigma^2 estimate.
+    """
+    import numpy as np
+    lam = np.sort(np.asarray(lam, dtype=np.float64))[::-1]
+    keep = lam[lam > tol * lam[0]]
+    return int(keep.size), keep
+
+
+def sigma2_from_bulk(lam, frac=0.5):
+    """Noise variance from the TRAILING fraction of the TRUNCATED spectrum.
+
+    Median, not mean: the mean is inflated by the signal, which would push the
+    MP edge up and hide exactly what the figure exists to show. Callers must
+    pass an already-truncated array -- on a raw spectrum with a residue tail
+    the median collapses to ~0 and the edge becomes meaningless.
     """
     lam = sorted((float(x) for x in lam), reverse=True)
     tail = lam[int(len(lam) * (1.0 - frac)):] or lam
@@ -242,22 +266,50 @@ def main():
         fig, axes = plt.subplots(nrow, ncol, figsize=(4.4 * ncol, 3.5 * nrow),
                                  squeeze=False)
         for ax, d in zip(axes.ravel(), sel):
-            lam = np.sort(np.asarray(d["lam"], dtype=float))[::-1]
-            tot = lam.sum()
-            share = lam / tot                    # comparable across differing p
-            ax.semilogy(np.arange(1, len(share) + 1), share, lw=1.2,
-                        color="black", label="observed")
-            s2 = sigma2_from_bulk(lam, a.bulk_frac)
-            edge = mp_upper_edge(d["n"], d["p"], s2)
+            raw = np.sort(np.asarray(d["lam"], dtype=float))[::-1]
+            nr, lam = numerical_rank(raw)          # TRUNCATE FIRST
+            tot = raw.sum()                        # share of TOTAL variance
+            share = lam / tot
+            n, p = d["n"], d["p"]
+            bound = min(int(n) - 1, int(p)) if n and p else None
+
+            ax.semilogy(np.arange(1, nr + 1), share, lw=1.2, color="black",
+                        label="observed")
+            s2 = sigma2_from_bulk(lam, a.bulk_frac)   # from the TRUNCATED tail
+            edge = mp_upper_edge(n, p, s2)
+            cross = int((lam > edge).sum()) if edge else None
             if edge:
                 ax.axhline(edge / tot, ls="--", lw=1.0, color="crimson",
-                           label="MP upper edge (pure noise)")
+                           label=f"MP edge, crossing at {cross}")
             if isinstance(d["pr"], (int, float)):
                 ax.axvline(d["pr"], ls=":", lw=1.2, color="navy",
                            label=f"participation ratio = {d['pr']:.0f}")
-            ax.set_title(f"{d['label']}   n={d['n']}, p={d['p']}", fontsize=9)
+            if cross:
+                ax.axvline(cross, ls="-.", lw=1.0, color="crimson", alpha=0.6)
+
+            # y-limits from the RETAINED range only; residue must not set scale
+            ax.set_ylim(share.min() * 0.5, share.max() * 2.0)
+            d["_report"] = dict(n=n, p=p, bound=bound, numrank=nr,
+                                sigma2=s2, mp_cross=cross, pr=d["pr"],
+                                span_oom=float(np.log10(lam[0] / lam[-1])))
+
+            ax.set_title(f"{d['label']}   n={n}, p={p}   "
+                         f"rank {nr}/{bound}", fontsize=9)
             ax.set_xlabel("eigenvalue index")
             ax.set_ylabel("eigenvalue / total variance")
+            # rank-limited by sample size: p far exceeds what n can support
+            if bound and p and bound < 0.5 * p:
+                ax.text(0.02, 0.04,
+                        f"rank-limited by sample size (n-1={bound} << p={p});\n"
+                        f"MP edge computed on the retained portion",
+                        transform=ax.transAxes, fontsize=6.5, va="bottom",
+                        color="dimgray")
+            elif bound and nr < 0.9 * bound:
+                ax.text(0.02, 0.04,
+                        f"numerical rank {nr} < bound {bound}: "
+                        f"{bound - nr} dependent directions",
+                        transform=ax.transAxes, fontsize=6.5, va="bottom",
+                        color="dimgray")
             ax.legend(fontsize=7, loc="upper right")
         for ax in axes.ravel()[len(sel):]:
             ax.axis("off")
@@ -265,11 +317,11 @@ def main():
                 else "sensitivity check: n varies across panels")
         fig.suptitle(
             f"Control-covariance eigenvalue spectra, cap n={cap}  ({kind})\n"
-            f"MP edge uses sigma^2 = median of the trailing "
-            f"{a.bulk_frac:.0%} of the spectrum, not the mean of all "
-            f"eigenvalues (which the signal inflates)   |   generated "
-            f"{utc_now()}", fontsize=9)
-        fig.tight_layout(rect=[0, 0, 1, 0.94])
+            f"truncated at numerical rank, tol = {NUM_RANK_TOL:g} x lambda_max\n"
+            f"MP edge: sigma^2 = median of the trailing {a.bulk_frac:.0%} of the "
+            f"TRUNCATED spectrum, not the mean (which the signal inflates)\n"
+            f"generated {utc_now()}", fontsize=8)
+        fig.tight_layout(rect=[0, 0, 1, 0.90])
         stem = f"spectrum_cap{cap}" + ("_primary" if is_primary else
                                        "_sensitivity")
         fig.savefig(out / f"{stem}.pdf")
@@ -277,7 +329,26 @@ def main():
         plt.close(fig)
         written.append(f"{stem}.pdf/.png ({len(sel)} panels)")
 
-    print(f"verified {len(panels)} spectra against their JSON integrity triples")
+    print(f"\nverified {len(panels)} spectra against their JSON integrity "
+          f"triples\n")
+    print(f"  {'panel':<24}{'cap':>6}{'n':>7}{'p':>7}{'bound':>7}{'numrank':>9}"
+          f"{'sigma2':>12}{'MPcross':>9}{'PR':>8}{'span_oom':>10}")
+    over = []
+    for d in sorted(panels, key=lambda x: (x["cap"], x["label"])):
+        r = d.get("_report")
+        if not r:
+            continue
+        print(f"  {d['label']:<24}{d['cap']:>6}{r['n']:>7}{r['p']:>7}"
+              f"{r['bound']:>7}{r['numrank']:>9}{r['sigma2']:>12.4g}"
+              f"{r['mp_cross']:>9}{r['pr']:>8.0f}{r['span_oom']:>10.2f}")
+        if r["span_oom"] > 6.0:
+            over.append((d["label"], d["cap"], r["span_oom"]))
+    if over:
+        print("\n  !! SPAN CHECK FAILED -- retained y-range exceeds ~6 orders")
+        for lab, cap, sp in over:
+            print(f"     {lab} cap={cap}: {sp:.2f} orders")
+        print("     NOT clipped. Reported as-is.")
+    print("")
     for w in written:
         print(f"  wrote {rel(out)}/{w}")
     return 0

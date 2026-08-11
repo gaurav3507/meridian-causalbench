@@ -1,18 +1,18 @@
 # table_b_dimension
 
 ```
-generated   : 2026-08-11T04:44:58Z
-generator   : 88_make_descriptive_tables.py @ 5fd095a
+generated   : 2026-08-11T08:15:00Z
+generator   : 88_make_descriptive_tables.py @ 8181090
 source dir  : causalbench/results/ranktest/descriptive/descriptives
 artefacts   : 8 CURRENT, 0 skipped
-  source    : 2026-08-10T15-37-05Z__k562.json   meta.git_commit=f143af3
-  source    : 2026-08-10T15-37-18Z__rpe1.json   meta.git_commit=f143af3
-  source    : 2026-08-10T15-44-43Z__norman.json   meta.git_commit=f143af3
-  source    : 2026-08-10T16-15-14Z__frangieh_coculture.json   meta.git_commit=f143af3
-  source    : 2026-08-10T16-35-44Z__frangieh_control.json   meta.git_commit=f143af3
-  source    : 2026-08-10T17-08-11Z__frangieh_ifng.json   meta.git_commit=f143af3
-  source    : 2026-08-10T17-08-19Z__hcp.json   meta.git_commit=f143af3
-  source    : 2026-08-11T04-20-39Z__abide.json   meta.git_commit=f143af3
+  source    : 2026-08-11T06-12-06Z__k562.json   meta.git_commit=8181090
+  source    : 2026-08-11T06-12-20Z__rpe1.json   meta.git_commit=8181090
+  source    : 2026-08-11T06-20-34Z__norman.json   meta.git_commit=8181090
+  source    : 2026-08-11T06-53-37Z__frangieh_coculture.json   meta.git_commit=8181090
+  source    : 2026-08-11T07-13-08Z__frangieh_control.json   meta.git_commit=8181090
+  source    : 2026-08-11T07-47-30Z__frangieh_ifng.json   meta.git_commit=8181090
+  source    : 2026-08-11T07-47-38Z__hcp.json   meta.git_commit=8181090
+  source    : 2026-08-11T07-47-45Z__abide.json   meta.git_commit=8181090
 ```
 
 | dataset | spec_cap | n_genes | n_control_available | n_control_used | p_over_n | n_lt_p_flag | participation_ratio | effective_rank_exp_spectral_entropy | n_comp_80pct | n_comp_90pct | n_comp_95pct | top_eigenvalue_share |

@@ -69,7 +69,12 @@
           "top_eigenvalue_share": 0.3192098920663383,
           "n_nonzero_eigenvalues": 200,
           "matches_fit_pca_basis": true,
-          "fit_pca_mu_identical": true
+          "fit_pca_mu_identical": true,
+          "spectra_key": "hcp__2000",
+          "lam_len": 200,
+          "lam_sum": 187675231.1282532,
+          "lam_sumsq": 5121490016976284.0,
+          "spectra_sidecar": "2026-08-11T07-47-38Z__hcp__spectra.npz"
         },
         "8000": {
           "n_control_used": 8000,
@@ -86,7 +91,12 @@
           "top_eigenvalue_share": 0.3032140362198959,
           "n_nonzero_eigenvalues": 200,
           "matches_fit_pca_basis": true,
-          "fit_pca_mu_identical": true
+          "fit_pca_mu_identical": true,
+          "spectra_key": "hcp__8000",
+          "lam_len": 200,
+          "lam_sum": 180351088.3080651,
+          "lam_sumsq": 4419931790081569.0,
+          "spectra_sidecar": "2026-08-11T07-47-38Z__hcp__spectra.npz"
         }
       },
       "spectrum_caveat": "HCP has no control condition, so this spectrum is over ALL pooled runs, not a control pool. It is not comparable to the Perturb-seq control spectra.",
@@ -108,12 +118,13 @@
   },
   "contains_no_test": true,
   "disclaimer": "DESCRIPTIVE ONLY. No rank test was run and no assumption verdict is expressed or implied. Phase B is not authorised.",
-  "peak_rss_mb": 1007.8,
+  "spectra_sidecar": "2026-08-11T07-47-38Z__hcp__spectra.npz",
+  "peak_rss_mb": 1007.0,
   "meta": {
     "statistic": "descriptive",
     "gate": "descriptives",
-    "git_commit": "f143af3",
-    "timestamp": "2026-08-10T17:08:19Z",
+    "git_commit": "8181090",
+    "timestamp": "2026-08-11T07:47:38Z",
     "config": {
       "alpha": null,
       "B": null,
@@ -144,7 +155,7 @@
         "platform_tag": "Linux-x86_64-py3.10.12",
         "timezone": "UTC",
         "timestamp_suffix": "Z",
-        "peak_rss_mb": 1007.8,
+        "peak_rss_mb": 1007.0,
         "overlap_check": false
       }
     },
